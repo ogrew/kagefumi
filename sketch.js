@@ -1,0 +1,513 @@
+const CAM_DIST = 3000;
+const MAX_LIMIT_Y = 3000;
+const STAIR_W_RATIO = 0.3;    // 階段の幅 = D × この値（最大0.5）
+const B_OFFSET = 1.0;         // ボールBの位置（ボールAから何踊り場ぶん上か）
+const PAIR_INTERVAL = 3;      // ツガイ同士の間隔（踊り場の数）
+const STOP_RAMP = 0.06;       // 停止前後の減速・加速にかける時間（サイクル比）
+const WARP_N = 400;           // 時間ワープ表の分割数
+const SHADOW_EXTRA = 8;       // 影の計算で画面の外に余分に描く踊り場の数（偶数）
+const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の平面の高さ）
+// 太陽は無限遠の平行光として扱うので、効くのは向きだけ。
+// 高さを固定しているので、SUN_RADIUS が大きいほど太陽は低く（斜めから）、小さいほど真上に近くなる
+
+const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
+
+let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
+let u = 0;
+let uTotal = 0;   // 折り返さない累計（停止の抽選用）
+let orbit = 0;
+let paused = false;
+let shadingSel;   // シェーディングの選択（shading.js の SHADINGS のキー）
+let lightSel;     // 光源の置き方（CAMERA / FIXED）
+let sLightUp, sStairShadow, sSunSpeed, sSunRadius;
+let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジアン）。初期値は以前の固定の向きに合わせた
+let panel;
+let inkPicker;                 // インク色（紙の白と組み合わせるもう1色）
+const INK_DEFAULT = '#000000';
+
+function setup() {
+  createCanvas(windowWidth, windowHeight, WEBGL);
+
+  panel = createDiv();
+  panel.style('position', 'absolute');
+  panel.style('top', '10px');
+  panel.style('left', '10px');
+  panel.style('padding', '8px 10px');
+  panel.style('background', 'rgba(255,255,255,0.85)');
+  panel.style('border', '1px solid #000');
+  panel.style('font', '16px monospace');
+  // 項目が増えて画面の高さを超えたら、パネルの中をスクロールできるようにする
+  panel.style('max-height', 'calc(100vh - 20px)');
+  panel.style('overflow-y', 'auto');
+  panel.style('box-sizing', 'border-box');
+
+  // ===== 作品タイトル（この下は p5 側：形と動き） =====
+  makeGroup(panel, 'Kagefumi', true);
+
+  makeSection(panel, 'LANDING');      // 踊り場の大きさと、上下に重なる踊り場の間隔
+  sW     = makeSlider(panel, 'W',          60,  360, 120);
+  sD     = makeSlider(panel, 'D',         120,  480, 240);
+  sH     = makeSlider(panel, 'H',           5,  200,  30);
+  sVGap  = makeSlider(panel, 'V_GAP',       0,  400, 180);
+
+  makeSection(panel, 'STAIRS');       // 段数と、向かい合う踊り場の間隔（＝階段の長さ）
+  sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
+  sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
+
+  makeSection(panel, 'BALL');         // ボールの大きさと動き
+  sBallR = makeSlider(panel, 'BALL_R_RATIO', 0,   1, 0.75, 0.01);
+  sSpeed = makeSlider(panel, 'SPEED',      -2,    2, 0.8, 0.1);
+  sLA    = makeSlider(panel, 'L_A',       0.05, 0.8, 0.5, 0.01);
+  sLB    = makeSlider(panel, 'L_B',       0.05, 0.8, 0.7, 0.01);
+  sStopP = makeSlider(panel, 'STOP_PROB',   0,    1, 0.3, 0.01);
+  sStopLen = makeSlider(panel, 'STOP_LEN',  0,  0.4, 0.2, 0.01);
+
+  makeSection(panel, 'CAMERA');
+  sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
+  sAzim  = makeSlider(panel, 'AZIM0',       0,  360,  45);
+  sRoll  = makeSlider(panel, 'ROLL',      -90,   90,   0);
+  sZoom  = makeSlider(panel, 'ZOOM',      0.3,   3,   1, 0.01);
+  sOrbit = makeSlider(panel, 'ORBIT_SPEED', 0,    1, 0.2, 0.01);
+
+  // ===== LOOK（シェーダー側：見た目） =====
+  makeGroup(panel, 'LOOK');
+
+  makeSection(panel, 'SHADING');      // 塗り方と影
+  shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
+  inkPicker = makeColor(panel, 'INK', INK_DEFAULT);   // 紙（白）と組み合わせるもう1色
+  sStairShadow = makeSlider(panel, 'STAIR_SHADOW', 0, 1, 0.5, 0.01); // 階段の影の中の明るさ（1＝階段の影なし）
+
+  makeSection(panel, 'LIGHT');        // 光源：CAMERA＝カメラの少し上に追従、FIXED＝太陽が円周軌道を回る
+  lightSel = makeSelect(panel, 'LIGHT', ['CAMERA', 'FIXED'], 'CAMERA');
+  sLightUp = makeSlider(panel, 'LIGHT_UP',  0,   80,  25);   // LIGHT=CAMERA：カメラから何度上に光源を置くか
+  sSunSpeed  = makeSlider(panel, 'SUN_SPEED', -2,   2, 0.3, 0.05); // LIGHT=FIXED：太陽が軌道を回る速さ（度/フレーム）
+  sSunRadius = makeSlider(panel, 'SUN_RADIUS', 0, 3000, 600, 10);  // LIGHT=FIXED：軌道の半径（高さは SUN_HEIGHT）
+
+  // 光源の種類に関係するスライダーだけを表示する
+  const updateLightRows = () => {
+    const cam = lightSel.value() === 'CAMERA';
+    sLightUp.row.style('display', cam ? 'flex' : 'none');
+    sSunSpeed.row.style('display', cam ? 'none' : 'flex');
+    sSunRadius.row.style('display', cam ? 'none' : 'flex');
+  };
+  lightSel.changed(updateLightRows);
+  updateLightRows();
+
+  const btnRow = createDiv().parent(panel);
+  btnRow.style('display', 'flex');
+  btnRow.style('gap', '8px');
+  btnRow.style('margin-top', '12px');
+  btnRow.style('padding-top', '8px');
+  btnRow.style('border-top', '2px solid #000');
+
+  const btn = createButton('RESET').parent(btnRow);
+  styleButton(btn);
+  btn.mousePressed(() => {
+    for (const o of sliders) {
+      o.s.value(o.val);
+      o.v.html(o.val);
+    }
+    inkPicker.value(INK_DEFAULT);
+  });
+
+  // PAUSE：時間（階段・球・カメラ周回）を止める。スライダー操作は静止中も反映される
+  const pauseBtn = createButton('PAUSE').parent(btnRow);
+  styleButton(pauseBtn);
+  pauseBtn.mousePressed(() => {
+    paused = !paused;
+    pauseBtn.html(paused ? 'PLAY' : 'PAUSE');
+  });
+}
+
+// 大きな区分（SCENE / LOOK）の見出し：太字＋太い線
+function makeGroup(parent, title, first = false) {
+  const g = createDiv(title).parent(parent);
+  g.style('font-weight', 'bold');
+  g.style('letter-spacing', '0.1em');
+  g.style('border-bottom', '2px solid #000');
+  g.style('padding-bottom', '2px');
+  g.style('margin-top', first ? '0' : '16px');
+}
+
+// 小さな区分（LANDING / STAIRS …）の見出し：小さめの灰色の文字＋細い線
+function makeSection(parent, title) {
+  const s = createDiv(title).parent(parent);
+  s.style('font-size', '12px');
+  s.style('color', '#666');
+  s.style('border-top', '1px solid #bbb');
+  s.style('margin-top', '8px');
+  s.style('padding-top', '3px');
+  s.style('margin-bottom', '2px');
+}
+
+// ラベル付きの色選択（行はスライダーと同じ並び）
+function makeColor(parent, label, value) {
+  const row = createDiv().parent(parent);
+  row.style('display', 'flex');
+  row.style('align-items', 'center');
+  row.style('gap', '6px');
+  row.style('margin', '2px 0');
+  createSpan(label).parent(row).style('width', '140px');
+  const picker = createColorPicker(value).parent(row);
+  picker.style('width', '60px');
+  picker.style('height', '24px');
+  return picker;
+}
+
+// ラベル付きのプルダウン（行はスライダーと同じ並び）
+function makeSelect(parent, label, options, selected) {
+  const row = createDiv().parent(parent);
+  row.style('display', 'flex');
+  row.style('align-items', 'center');
+  row.style('gap', '6px');
+  row.style('margin', '2px 0');
+  createSpan(label).parent(row).style('width', '140px');
+  const sel = createSelect().parent(row);
+  sel.style('font', '16px monospace');
+  for (const o of options) sel.option(o);
+  sel.selected(selected);
+  return sel;
+}
+
+function styleButton(b) {
+  b.style('font', '16px monospace');
+  b.style('padding', '4px 12px');
+}
+
+function makeSlider(parent, label, min, max, val, stp = 1) {
+  const row = createDiv().parent(parent);
+  row.style('display', 'flex');
+  row.style('align-items', 'center');
+  row.style('gap', '6px');
+  const name = createSpan(label).parent(row);
+  name.style('width', '140px');
+  const s = createSlider(min, max, val, stp).parent(row);
+  s.style('width', '160px');
+  const v = createSpan(String(val)).parent(row);
+  v.style('width', '50px');
+  s.input(() => v.html(s.value()));
+  sliders.push({ s, v, val });
+  s.row = row;   // 行ごと表示・非表示を切り替えるため
+  return s;
+}
+
+// H キーでパネル全体を表示・非表示
+function keyPressed() {
+  if (key === 'h' || key === 'H') {
+    const hidden = panel.style('display') === 'none';
+    panel.style('display', hidden ? 'block' : 'none');
+  }
+}
+
+function sideOf(k) {
+  return abs(k % 2) === 0 ? 1 : -1;
+}
+
+function draw() {
+  background(255);
+
+  // 形状パラメータをまとめる
+  const p = {
+    W: sW.value(),
+    D: sD.value(),
+    steps: sSteps.value(),
+    H: sH.value(),
+    gap: sGap.value(),
+  };
+  p.step = (p.H + sVGap.value()) / 2;      // 隣り合う踊り場の高低差
+  p.run = p.gap / p.steps;
+  p.rise = p.step / (p.steps + 1);
+  p.sw = p.D * STAIR_W_RATIO;
+  p.zc = p.D / 2 - p.sw / 2;               // 階段の中心z（絶対値）
+  p.R = p.sw * sBallR.value() / 2;         // 球の半径（1.0で直径＝階段の幅）
+
+  const e = radians(sElev.value());
+  const zoom = sZoom.value();
+  // ロールで画面が傾いても途切れないよう、画面の対角線の半分で判定する
+  const halfView = sqrt(sq(width) + sq(height)) / 2 / zoom;
+  const limitY = min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
+  const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
+
+  if (!paused) orbit += sOrbit.value();
+  const a = radians(sAzim.value() + orbit);
+  const r = CAM_DIST * cos(e);
+  const eye = createVector(r * sin(a), -CAM_DIST * sin(e), r * cos(a));
+
+  // 正投影なので「視野角」の代わりに、見える範囲の広さ（ZOOM）で調整する
+  const hw = width / 2 / zoom;
+  const hh = height / 2 / zoom;
+  ortho(-hw, hw, -hh, hh, CAM_DIST - sceneR, CAM_DIST + sceneR);
+
+  // ロール：視線方向を軸に、カメラの上方向ベクトルを回す
+  const fwd = p5.Vector.mult(eye, -1).normalize();
+  const right = p5.Vector.cross(fwd, createVector(0, 1, 0)).normalize();
+  const up0 = p5.Vector.cross(right, fwd);
+  const roll = radians(sRoll.value());
+  const up = p5.Vector.mult(up0, cos(roll)).add(p5.Vector.mult(right, sin(roll)));
+  camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
+
+  const du = paused ? 0 : sSpeed.value() / p.step;
+  u += du;
+  u = ((u % 2) + 2) % 2;
+  uTotal += du;
+
+  fill(255);
+  stroke(0);
+  strokeWeight(1);
+
+  // 以下、座標はすべて「階段ローカル」（踊り場kの中心y = k*step）で計算し、
+  // 最後に -u*step だけずらして描く
+  const kMin = ceil(u - limitY / p.step);
+  const kMax = floor(u + limitY / p.step);
+  // ツガイ（A：インク色、B：白＝Aの上）を PAIR_INTERVAL 踊り場ごとに配置
+  // 階段にボールの影を落とすため、先に位置だけ計算しておく。半径0なら置かない
+  const balls = [];
+  if (p.R > 0) {
+    const span = PAIR_INTERVAL * p.step;
+    const jMin = ceil(-limitY / span);
+    const jMax = floor(limitY / span);
+    const LA = sLA.value(), LB = sLB.value();
+    const warpA = buildWarp(LA, sStopLen.value());
+    const warpB = buildWarp(LB, sStopLen.value());
+    const prob = sStopP.value();
+    for (let j = jMin; j <= jMax; j++) {
+      const off = j * PAIR_INTERVAL;
+      const qA = stopWarp(u + off, uTotal + off, j, 0, prob, warpA);
+      const qB = stopWarp(u + off - B_OFFSET, uTotal + off - B_OFFSET, j, 1, prob, warpB);
+      balls.push({ ...ballPos(qA, p, LA), r: p.R, ink: true });
+      balls.push({ ...ballPos(qB, p, LB), r: p.R, ink: false });
+    }
+  }
+
+  const shading = shadingSel.value();
+  const inkCol = inkPicker.color();
+  const ctx = {
+    zoom, balls, centerY: u * p.step,
+    ink: [red(inkCol) / 255, green(inkCol) / 255, blue(inkCol) / 255],
+  };
+  if (lightSel.value() === 'FIXED') {
+    // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
+    // （yは下向きなので、上は -y）
+    if (!paused) sunAngle += radians(sSunSpeed.value());
+    const r = sSunRadius.value();
+    ctx.lightDir = [r * cos(sunAngle), -SUN_HEIGHT, r * sin(sunAngle)];
+  } else {
+    // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
+    // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）
+    const toCam = eye.copy().normalize();
+    const lu = radians(sLightUp.value());
+    const L = p5.Vector.mult(toCam, cos(lu)).sub(p5.Vector.mult(up, sin(lu)));
+    ctx.lightDir = [L.x, L.y, L.z];
+  }
+
+  // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
+  const geo = stairGeometry(p);
+  const k0 = kMin - (((kMin % 2) + 2) % 2);   // kMin以下の偶数
+
+  // 影の下準備：光源から見た奥行きを描く
+  // 画面外（光源側）にある踊り場も影を落とすので、上下に SHADOW_EXTRA 踊り場ぶん余分に描く
+  const xr = p.gap / 2 + p.W;
+  const yc = u * p.step;
+  const bounds = {
+    x: [-xr, xr],
+    y: [yc - limitY - p.step, yc + limitY + p.step],
+    z: [-p.D / 2, p.D / 2],
+  };
+  const casterY = [bounds.y[0] - SHADOW_EXTRA * p.step, bounds.y[1] + SHADOW_EXTRA * p.step];
+  ctx.stairShadowTone = sStairShadow.value();
+  // ボールの影が届く高さの範囲（ボール中心から上下に）。
+  // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
+  // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
+  ctx.ballReach = p.R + 1.5 * p.step;
+  shadowPass(shading, ctx, bounds, casterY,
+    (dsh) => {   // 階段・踊り場
+      dsh.setUniform('uObjScale', 1.0);
+      for (let k = k0 - SHADOW_EXTRA; k <= kMax + SHADOW_EXTRA; k += 2) {
+        dsh.setUniform('uOffset', [0, k * p.step, 0]);
+        model(geo);
+      }
+    },
+    (dsh) => {   // ボール
+      for (const b of balls) {
+        dsh.setUniform('uBallY', b.y);
+        dsh.setUniform('uOffset', [b.x, b.y, b.z]);
+        dsh.setUniform('uObjScale', b.r);
+        sphere(1, 24, 16);
+      }
+    });
+
+  push();
+  translate(0, -u * p.step, 0);
+  const sh = beginShading(shading, ctx);
+  for (let k = k0; k <= kMax; k += 2) {
+    sh.setUniform('uOffset', [0, k * p.step, 0]);
+    push();
+    translate(0, k * p.step, 0);
+    model(geo);
+    pop();
+  }
+  endShading(ctx);
+
+  // ボール：シェーディングにボール用の塗りがあればそれで、なければ通常描画
+  if (!shadeBalls(shading, ctx)) {
+    const ink = inkColor255(ctx);
+    for (const b of balls) drawBall(b, b.r, b.ink ? ink : null, a, e, ink);
+  }
+  pop();
+}
+
+// 停止の抽選：このサイクルで止まるなら、サイクル内の進みをワープさせる
+// q：折り返しありの位置、qAbs：折り返しなしの位置（抽選用）、id：0=A,1=B
+function stopWarp(q, qAbs, j, id, prob, warp) {
+  if (!warp) return q;
+  const n = floor(q);
+  const f = q - n;
+  if (hash3(j, id, floor(qAbs)) >= prob) return q;
+  const x = f * WARP_N;
+  const i = min(floor(x), WARP_N - 1);
+  return n + lerp(warp[i], warp[i + 1], x - i);
+}
+
+// 疑似乱数（同じ入力なら常に同じ値 0〜1）
+function hash3(a, b, c) {
+  const v = sin(a * 12.9898 + b * 78.233 + c * 37.719) * 43758.5453;
+  return v - floor(v);
+}
+
+// 時間ワープ表 g(t)：g(0)=0, g(1)=1、踊り場中央（f=L/2）で速度0になり len だけ停止
+// 速度 v(t) = (1 - 停止窓) × (1 + a × sin²) で、停止で失った分を前後の加速で取り戻す
+// サイクルの境目では速度1なので、止まらないサイクルとなめらかにつながる
+function buildWarp(L, len) {
+  const tp = L / 2;
+  const half = min(len / 2, tp - STOP_RAMP - 0.01);
+  if (half <= 0) return null;
+
+  const dt = 1 / WARP_N;
+  const win = t => {
+    const d = abs(t - tp) - half;
+    if (d <= 0) return 1;
+    if (d >= STOP_RAMP) return 0;
+    const k = d / STOP_RAMP;
+    return 1 - k * k * (3 - 2 * k);
+  };
+  const bump = t => t < tp ? sq(sin(PI * t / tp)) : sq(sin(PI * (t - tp) / (1 - tp)));
+
+  // 前半・後半それぞれ、進む量がちょうど tp / (1 - tp) になる加速量 a を求める
+  let i0 = [0, 0], i1 = [0, 0];
+  for (let i = 0; i < WARP_N; i++) {
+    const t = (i + 0.5) * dt;
+    const h = t < tp ? 0 : 1;
+    i0[h] += (1 - win(t)) * dt;
+    i1[h] += (1 - win(t)) * bump(t) * dt;
+  }
+  const ac = [(tp - i0[0]) / i1[0], (1 - tp - i0[1]) / i1[1]];
+
+  const g = new Float32Array(WARP_N + 1);
+  for (let i = 0; i < WARP_N; i++) {
+    const t = (i + 0.5) * dt;
+    const h = t < tp ? 0 : 1;
+    g[i + 1] = g[i] + (1 - win(t)) * (1 + ac[h] * bump(t)) * dt;
+  }
+  for (let i = 0; i <= WARP_N; i++) g[i] /= g[WARP_N]; // 誤差補正
+  return g;
+}
+
+// シェーダーを使わない場合のボール。ink：インク色 [r,g,b]（null なら白いボール）
+// 白い球は背景と同化するので、カメラに正対する円で輪郭線を描く
+function drawBall(pos, R, ink, a, e, lineCol = 0) {
+  push();
+  translate(pos.x, pos.y, pos.z);
+  fill(ink || 255);
+  noStroke();
+  sphere(R, 24, 16);
+  if (!ink) {
+    rotateY(a);
+    rotateX(e);
+    noFill();
+    stroke(lineCol);
+    strokeWeight(1);
+    circle(0, 0, R * 2);
+  }
+  pop();
+}
+
+// 踊り場0・1（とそれぞれの階段）を1つのジオメトリにまとめてキャッシュする
+// 形に関わるスライダーが変わったときだけ作り直す
+let stairGeo = null;
+let stairKey = '';
+function stairGeometry(p) {
+  const geoKey = [p.W, p.D, p.steps, p.H, p.gap, p.step].join(',');
+  if (geoKey !== stairKey) {
+    if (stairGeo) freeGeometry(stairGeo);
+    stairGeo = buildGeometry(() => {
+      for (let k = 0; k <= 1; k++) {
+        for (const b of boxesOf(k, p)) {
+          push();
+          translate(b.x, b.top + b.h / 2, b.z);
+          box(b.w, b.h, b.d);
+          pop();
+        }
+      }
+    });
+    stairKey = geoKey;
+  }
+  return stairGeo;
+}
+
+// 踊り場kと、そこから1つ上（反対側）へ向かう階段の箱リスト
+function boxesOf(k, p) {
+  const side = sideOf(k);
+  const top = k * p.step - p.H / 2;
+  const list = [{ x: side * (p.gap / 2 + p.W / 2), z: 0, top: top, w: p.W, h: p.H, d: p.D }];
+  for (let i = 1; i <= p.steps; i++) {
+    list.push({
+      x: side * (p.gap / 2 - (i - 0.5) * p.run),
+      z: side * p.zc,
+      top: top - i * p.rise,
+      w: p.run, h: p.rise, d: p.sw,
+    });
+  }
+  return list;
+}
+
+// 球の位置（階段ローカル座標）
+// u が1進むごとに、踊り場n → 階段 → 踊り場n+1 を1サイクル進む（＝下る）
+function ballPos(q, p, L) {
+  const n = floor(q);
+  const f = q - n;
+  const s = sideOf(n);
+  const R = p.R;
+  let x, z;
+
+  if (f < L) {
+    // 踊り場nでU字に折り返す（奥/手前を入れ替える）
+    const t = f / L;
+    x = s * (p.gap / 2 + (p.W / 2) * sin(PI * t));
+    z = s * p.zc * cos(PI * t);
+  } else {
+    // 踊り場nから踊り場n+1へ階段を進む
+    const t = (f - L) / (1 - L);
+    x = s * (p.gap / 2 - p.gap * t);
+    z = -s * p.zc;
+  }
+
+  // 今のサイクルに関わる箱（踊り場n・n+1と、その前後の階段）だけを対象に、
+  // 上面に接する高さのうち一番高いものを採用（めり込み防止）
+  const near = boxesOf(n, p).concat(boxesOf(n + 1, p));
+  let y = Infinity;
+  for (const b of near) {
+    const dx = max(b.x - b.w / 2 - x, 0, x - (b.x + b.w / 2));
+    const dz = max(b.z - b.d / 2 - z, 0, z - (b.z + b.d / 2));
+    const d2 = dx * dx + dz * dz;
+    if (d2 < R * R) {
+      y = min(y, b.top - sqrt(R * R - d2));
+    }
+  }
+  if (y === Infinity) y = n * p.step - p.H / 2 - R;
+
+  return { x, y, z };
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}

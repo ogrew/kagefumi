@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# p5 のローカルコピー（index.html は CDN から読み込むので未使用）
+p5.js
+p5.sound.min.js
+
+# エディタ・ツールのローカル設定
+.claude/
