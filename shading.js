@@ -22,7 +22,7 @@
 //   vPos       階段ローカル座標での位置（スクロール前）
 //   vVert      箱の側面の縦方向の位置：0 = 面の上端、1 = 面の下端
 //   uLightDir  光源へ向かう単位ベクトル
-//   uPaper / uInk  2色
+//   uPaper / uInk  2色（COLOR_A / COLOR_B）、uMid その中間色
 //   uIsInk     ボール用：1 = インクのボール（黒）、0 = 紙のボール（白）
 //   lambert()  面が光の方を向いている度合い（0〜1、背を向けた面は0）
 //   shadows()  光が届く割合 vec2(ボールの影, 階段の影)（0 = 影の中、1 = 日なた）
@@ -92,6 +92,7 @@ uniform vec3 uLightDir;
 uniform float uZoom;        // 1ワールド単位あたりの画面ピクセル数
 uniform vec3 uPaper;
 uniform vec3 uInk;
+uniform vec3 uMid;          // 中間色（インクと紙を STAIR_SHADOW の割合で混ぜた色。混ぜ方は MIX）
 uniform float uGrain;       // 粒の大きさ（画面ピクセル）
 uniform float uIsInk;
 uniform sampler2D uBallMap;   // ボールだけを描いたシャドウマップ（奥行き）
@@ -193,8 +194,7 @@ const SHADINGS = {
         vec2 sh = shadows();
         if (sh.y < 0.5) level = min(level, 1.0);  // 階段の影
         if (sh.x < 0.5) level = 0.0;              // ボールの影
-        vec3 mid = mix(uInk, uPaper, uStairShadowTone);
-        vec3 col = level > 1.5 ? uPaper : (level > 0.5 ? mid : uInk);
+        vec3 col = level > 1.5 ? uPaper : (level > 0.5 ? uMid : uInk);
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -251,8 +251,49 @@ const SHADINGS = {
     },
   },
 };
-// インク色（uInk）はパネルの INK で選んだ色が、どのシェーディングにも上書きで使われる
-// （ctx.ink）。params の uInk は ctx.ink がないときの予備
+// 紙（uPaper）とインク（uInk）は、パネルの COLOR_A / COLOR_B（INVERT で入れ替え）が
+// どのシェーディングにも上書きで使われる（ctx.paper / ctx.ink）。params の値はその予備。
+// 中間色（uMid）は、インクと紙を STAIR_SHADOW の割合で混ぜた色。混ぜ方は MIX で選ぶ
+
+// ---------------------------------------------------------------------
+// 中間色の計算（色はすべて 0〜1 の sRGB）
+//   SRGB   ：画面の RGB 値をそのまま混ぜる。暗めに寄り、補色どうしだと濁る
+//   LINEAR ：光の強さ（リニア）で混ぜる。物理的な光の混ざり方で、明るめに寄る
+//   OKLAB  ：人の見た目に合わせた色空間で混ぜる。明るさが見た目どおり真ん中に来る
+// ---------------------------------------------------------------------
+const toLinear = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const toSrgb = c => {
+  c = Math.min(1, Math.max(0, c));
+  return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+};
+function linearToOklab([r, g, b]) {
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+  ];
+}
+function oklabToLinear([L, a, b]) {
+  const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * b, 3);
+  const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * b, 3);
+  const s = Math.pow(L - 0.0894841775 * a - 1.2914855480 * b, 3);
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+  ];
+}
+// 色 a と b を t（0 = a、1 = b）で混ぜる
+function mixColor(a, b, t, mode) {
+  const lerp3 = (x, y) => x.map((v, i) => v + (y[i] - v) * t);
+  if (mode === 'SRGB') return lerp3(a, b);
+  const la = a.map(toLinear), lb = b.map(toLinear);
+  if (mode === 'LINEAR') return lerp3(la, lb).map(toSrgb);
+  return oklabToLinear(lerp3(linearToOklab(la), linearToOklab(lb))).map(toSrgb);
+}
 
 // ---------------------------------------------------------------------
 // 以下は仕組み部分（通常は触らなくてよい）
@@ -366,6 +407,8 @@ function setCommonUniforms(sh, s, ctx) {
     if (k !== 'uShadowBlur') sh.setUniform(k, v);
   }
   if (ctx.ink) sh.setUniform('uInk', ctx.ink);
+  if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
+  sh.setUniform('uMid', midColor(s, ctx));
 
   const lm = ctx.light;
   sh.setUniform('uUseShadow', ctx.useShadow && lm ? 1 : 0);
@@ -426,7 +469,17 @@ function shadeBalls(name, ctx) {
   return true;
 }
 
-// インク色（0〜255）。シェーダーを使わずに描くもの（輪郭線・通常描画のボール）用
+// インク色・紙の色（0〜255）。シェーダーを使わずに描くもの（背景・輪郭線・通常描画のボール）用
 function inkColor255(ctx) {
   return (ctx.ink || [0, 0, 0]).map(c => c * 255);
+}
+function paperColor255(ctx) {
+  return (ctx.paper || [1, 1, 1]).map(c => c * 255);
+}
+
+// 中間色：インクと紙を STAIR_SHADOW の割合で混ぜる（0 でインク、1 で紙）
+function midColor(s, ctx) {
+  const ink = ctx.ink || s.params.uInk || [0, 0, 0];
+  const paper = ctx.paper || s.params.uPaper || [1, 1, 1];
+  return mixColor(ink, paper, ctx.stairShadowTone ?? 0.5, ctx.mixMode || 'OKLAB');
 }

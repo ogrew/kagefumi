@@ -17,13 +17,15 @@ let u = 0;
 let uTotal = 0;   // 折り返さない累計（停止の抽選用）
 let orbit = 0;
 let paused = false;
+let pauseBtn;
 let shadingSel;   // シェーディングの選択（shading.js の SHADINGS のキー）
 let lightSel;     // 光源の置き方（CAMERA / FIXED）
 let sLightUp, sStairShadow, sSunSpeed, sSunRadius;
 let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジアン）。初期値は以前の固定の向きに合わせた
 let panel;
-let inkPicker;                 // インク色（紙の白と組み合わせるもう1色）
-const INK_DEFAULT = '#000000';
+let colorAPicker, colorBPicker, invertCheck, mixSel;
+const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
+const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
 
 function setup() {
   createCanvas(windowWidth, windowHeight, WEBGL);
@@ -74,8 +76,14 @@ function setup() {
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
-  inkPicker = makeColor(panel, 'INK', INK_DEFAULT);   // 紙（白）と組み合わせるもう1色
   sStairShadow = makeSlider(panel, 'STAIR_SHADOW', 0, 1, 0.5, 0.01); // 階段の影の中の明るさ（1＝階段の影なし）
+
+  // 2色：A＝背景・光の当たる面（紙）、B＝影・暗い面（インク）。INVERT で役割を入れ替える
+  makeSection(panel, 'COLOR');
+  colorAPicker = makeColor(panel, 'COLOR_A', COLOR_A_DEFAULT);
+  colorBPicker = makeColor(panel, 'COLOR_B', COLOR_B_DEFAULT);
+  invertCheck  = makeCheck(panel, 'INVERT', false);
+  mixSel       = makeSelect(panel, 'MIX', ['OKLAB', 'SRGB', 'LINEAR'], 'OKLAB'); // 中間色の計算方法
 
   makeSection(panel, 'LIGHT');        // 光源：CAMERA＝カメラの少し上に追従、FIXED＝太陽が円周軌道を回る
   lightSel = makeSelect(panel, 'LIGHT', ['CAMERA', 'FIXED'], 'CAMERA');
@@ -107,16 +115,22 @@ function setup() {
       o.s.value(o.val);
       o.v.html(o.val);
     }
-    inkPicker.value(INK_DEFAULT);
+    colorAPicker.value(COLOR_A_DEFAULT);
+    colorBPicker.value(COLOR_B_DEFAULT);
+    invertCheck.checked(false);
+    mixSel.selected('OKLAB');
   });
 
   // PAUSE：時間（階段・球・カメラ周回）を止める。スライダー操作は静止中も反映される
-  const pauseBtn = createButton('PAUSE').parent(btnRow);
+  pauseBtn = createButton('PAUSE').parent(btnRow);
   styleButton(pauseBtn);
-  pauseBtn.mousePressed(() => {
-    paused = !paused;
-    pauseBtn.html(paused ? 'PLAY' : 'PAUSE');
-  });
+  pauseBtn.mousePressed(togglePause);
+}
+
+// PLAY / PAUSE を切り替える（PAUSE ボタンと SPACE キーから呼ぶ）
+function togglePause() {
+  paused = !paused;
+  pauseBtn.html(paused ? 'PLAY' : 'PAUSE');
 }
 
 // 大きな区分（SCENE / LOOK）の見出し：太字＋太い線
@@ -152,6 +166,19 @@ function makeColor(parent, label, value) {
   picker.style('width', '60px');
   picker.style('height', '24px');
   return picker;
+}
+
+// ラベル付きのチェックボックス（行はスライダーと同じ並び）
+function makeCheck(parent, label, checked) {
+  const row = createDiv().parent(parent);
+  row.style('display', 'flex');
+  row.style('align-items', 'center');
+  row.style('gap', '6px');
+  row.style('margin', '2px 0');
+  createSpan(label).parent(row).style('width', '140px');
+  const box = createCheckbox('', checked).parent(row);
+  box.elt.querySelector('input').style.transform = 'scale(1.3)';
+  return box;
 }
 
 // ラベル付きのプルダウン（行はスライダーと同じ並び）
@@ -197,6 +224,12 @@ function keyPressed() {
     const hidden = panel.style('display') === 'none';
     panel.style('display', hidden ? 'block' : 'none');
   }
+  // SPACE キーで PLAY / PAUSE。false を返して、ページのスクロールや
+  // フォーカス中のボタン・チェックボックスが反応するのを防ぐ
+  if (key === ' ') {
+    togglePause();
+    return false;
+  }
 }
 
 function sideOf(k) {
@@ -204,7 +237,16 @@ function sideOf(k) {
 }
 
 function draw() {
-  background(255);
+  // 2色：紙（背景・光の当たる面）とインク（影・暗い面）。INVERT で入れ替える
+  const toRgb01 = (picker) => {
+    const c = picker.color();
+    return [red(c) / 255, green(c) / 255, blue(c) / 255];
+  };
+  const colA = toRgb01(colorAPicker), colB = toRgb01(colorBPicker);
+  const inverted = invertCheck.checked();
+  const paperRGB = inverted ? colB : colA;
+  const inkRGB = inverted ? colA : colB;
+  background(paperRGB[0] * 255, paperRGB[1] * 255, paperRGB[2] * 255);
 
   // 形状パラメータをまとめる
   const p = {
@@ -280,10 +322,9 @@ function draw() {
   }
 
   const shading = shadingSel.value();
-  const inkCol = inkPicker.color();
   const ctx = {
     zoom, balls, centerY: u * p.step,
-    ink: [red(inkCol) / 255, green(inkCol) / 255, blue(inkCol) / 255],
+    paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
   };
   if (lightSel.value() === 'FIXED') {
     // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
@@ -351,7 +392,8 @@ function draw() {
   // ボール：シェーディングにボール用の塗りがあればそれで、なければ通常描画
   if (!shadeBalls(shading, ctx)) {
     const ink = inkColor255(ctx);
-    for (const b of balls) drawBall(b, b.r, b.ink ? ink : null, a, e, ink);
+    const paper = paperColor255(ctx);
+    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, !b.ink);
   }
   pop();
 }
@@ -412,15 +454,15 @@ function buildWarp(L, len) {
   return g;
 }
 
-// シェーダーを使わない場合のボール。ink：インク色 [r,g,b]（null なら白いボール）
-// 白い球は背景と同化するので、カメラに正対する円で輪郭線を描く
-function drawBall(pos, R, ink, a, e, lineCol = 0) {
+// シェーダーを使わない場合のボール。col：塗りの色 [r,g,b]（0〜255）
+// 紙の色の球（outline = true）は背景と同化するので、カメラに正対する円で輪郭線を描く
+function drawBall(pos, R, col, a, e, lineCol, outline) {
   push();
   translate(pos.x, pos.y, pos.z);
-  fill(ink || 255);
+  fill(col);
   noStroke();
   sphere(R, 24, 16);
-  if (!ink) {
+  if (outline) {
     rotateY(a);
     rotateX(e);
     noFill();
