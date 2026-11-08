@@ -24,6 +24,7 @@ let sLightUp, sStairShadow, sSunSpeed, sSunRadius;
 let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジアン）。初期値は以前の固定の向きに合わせた
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
+let ditherSel, ditherScreen, sGrainSize, sDotPitch;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
 
@@ -76,7 +77,26 @@ function setup() {
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
+  // GRAIN の白黒の置き換え方（ディザリング）
+  ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE'], 'RANDOM');
+  ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
+  sGrainSize   = makeSlider(panel, 'GRAIN_SIZE', 1, 6, 1);           // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
+  sDotPitch    = makeSlider(panel, 'DOT_PITCH', 5, 20, 8);           // HALFTONE の網点の間隔（画面ピクセル）
   sStairShadow = makeSlider(panel, 'STAIR_SHADOW', 0, 1, 0.5, 0.01); // 階段の影の中の明るさ（1＝階段の影なし）
+
+  // シェーディングとディザの種類に関係する項目だけを表示する
+  const updateDitherRows = () => {
+    const grain = shadingSel.value() === 'GRAIN';
+    const half = ditherSel.value() === 'HALFTONE';
+    const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
+    show(ditherSel, grain);
+    show(ditherScreen, grain);
+    show(sGrainSize, grain && !half);
+    show(sDotPitch, grain && half);
+  };
+  shadingSel.changed(updateDitherRows);
+  ditherSel.changed(updateDitherRows);
+  updateDitherRows();
 
   // 2色：A＝背景・光の当たる面（紙）、B＝影・暗い面（インク）。INVERT で役割を入れ替える
   makeSection(panel, 'COLOR');
@@ -119,6 +139,9 @@ function setup() {
     colorBPicker.value(COLOR_B_DEFAULT);
     invertCheck.checked(false);
     mixSel.selected('OKLAB');
+    ditherSel.selected('RANDOM');
+    ditherScreen.checked(false);
+    ditherSel.elt.dispatchEvent(new Event('change'));
   });
 
   // PAUSE：時間（階段・球・カメラ周回）を止める。スライダー操作は静止中も反映される
@@ -178,6 +201,7 @@ function makeCheck(parent, label, checked) {
   createSpan(label).parent(row).style('width', '140px');
   const box = createCheckbox('', checked).parent(row);
   box.elt.querySelector('input').style.transform = 'scale(1.3)';
+  box.row = row;   // 行ごと表示・非表示を切り替えるため
   return box;
 }
 
@@ -193,6 +217,7 @@ function makeSelect(parent, label, options, selected) {
   sel.style('font', '16px monospace');
   for (const o of options) sel.option(o);
   sel.selected(selected);
+  sel.row = row;   // 行ごと表示・非表示を切り替えるため
   return sel;
 }
 
@@ -325,6 +350,8 @@ function draw() {
   const ctx = {
     zoom, balls, centerY: u * p.step,
     paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
+    dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
+    grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
   };
   if (lightSel.value() === 'FIXED') {
     // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る

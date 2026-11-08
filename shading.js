@@ -93,7 +93,11 @@ uniform float uZoom;        // 1ワールド単位あたりの画面ピクセル
 uniform vec3 uPaper;
 uniform vec3 uInk;
 uniform vec3 uMid;          // 中間色（インクと紙を STAIR_SHADOW の割合で混ぜた色。混ぜ方は MIX）
-uniform float uGrain;       // 粒の大きさ（画面ピクセル）
+uniform float uGrain;       // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
+uniform float uDotPitch;    // HALFTONE の網点の間隔（画面ピクセル）
+uniform float uDither;      // 0 = RANDOM、1 = BAYER、2 = HALFTONE
+uniform float uDitherScreen;// 1 なら模様を画面に貼りつける
+uniform float uForceScreen; // 1 なら常に画面に貼りつける（ボール用。BAYER / HALFTONE のみ）
 uniform float uIsInk;
 uniform sampler2D uBallMap;   // ボールだけを描いたシャドウマップ（奥行き）
 uniform sampler2D uBallInfo;  // 同じマップの色：そのボールの中心の高さ y
@@ -164,10 +168,43 @@ float withShadows(float plainTone, float ballTone, vec2 sh) {
   return mix(min(t, ballTone), t, sh.x);
 }
 
-// 明るさを粒の密度に置き換える（ワールド座標に貼りついた乱数を使う）
+// ---- 明るさ（0〜1）を紙とインクの2色に置き換える（ディザリング） ----
+// uDither：0 = RANDOM（ランダムな粒）、1 = BAYER（規則的な格子）、2 = HALFTONE（網点）
+// どれも「しきい値 < 明るさ なら紙、そうでなければインク」で、しきい値の作り方だけが違う
+
+// 模様を貼りつける2D座標（画面ピクセル単位を cellPx で割った値）
+//   WORLD ：面に貼りつける。面の向きに合わせて、法線に垂直な2軸を使う
+//   SCREEN：画面に貼りつける（uDitherScreen、またはボールのように uForceScreen のとき）
+vec2 ditherCoord(float cellPx) {
+  if (uDitherScreen > 0.5 || uForceScreen > 0.5) return gl_FragCoord.xy / cellPx;
+  vec3 n = abs(vNormal);
+  vec2 p = (n.y >= n.x && n.y >= n.z) ? vPos.xz : (n.x >= n.z ? vPos.zy : vPos.xy);
+  return p * uZoom / cellPx;
+}
+
+// 8×8 の Bayer 行列のしきい値（0〜1）。2×2 を再帰的に重ねて作る
+float bayer2(vec2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75); }
+float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
+float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
+
 vec4 grain(float tone) {
-  float n = hash3(floor(vPos * uZoom / uGrain));
-  return vec4(n < tone ? uPaper : uInk, 1.0);
+  float t;
+  if (uDither < 0.5) {
+    // RANDOM：マスごとの乱数（WORLD は3D座標に貼りつけるので、球でも継ぎ目が出ない）
+    bool screen = uDitherScreen > 0.5;
+    t = hash3(screen ? vec3(floor(gl_FragCoord.xy / uGrain), 0.0)
+                     : floor(vPos * uZoom / uGrain));
+  } else if (uDither < 1.5) {
+    // BAYER：8×8 の規則的なしきい値
+    t = bayer8(ditherCoord(uGrain)) + 0.5 / 64.0;
+  } else {
+    // HALFTONE：45度に傾けた格子の各マスの中心ほど値が大きい「山」を作り、
+    // 暗いほど中心のインクの丸が大きくなる（明るさ0.5で市松模様）
+    vec2 c = ditherCoord(uDotPitch);
+    c = vec2(c.x + c.y, c.y - c.x) * 0.70710678;
+    t = 1.0 - (0.5 + 0.25 * (cos(6.2831853 * c.x) + cos(6.2831853 * c.y)));
+  }
+  return vec4(t < tone ? uPaper : uInk, 1.0);
 }
 `;
 
@@ -406,6 +443,13 @@ function setCommonUniforms(sh, s, ctx) {
   for (const [k, v] of Object.entries(s.params)) {
     if (k !== 'uShadowBlur') sh.setUniform(k, v);
   }
+  // ディザリング（パネルの DITHER / DITHER_SCREEN / GRAIN_SIZE / DOT_PITCH）
+  const DITHERS = { RANDOM: 0, BAYER: 1, HALFTONE: 2 };
+  sh.setUniform('uDither', DITHERS[ctx.dither] ?? 0);
+  sh.setUniform('uDitherScreen', ctx.ditherScreen ? 1 : 0);
+  sh.setUniform('uForceScreen', 0);
+  if (ctx.grainSize) sh.setUniform('uGrain', ctx.grainSize);
+  sh.setUniform('uDotPitch', ctx.dotPitch || 12);
   if (ctx.ink) sh.setUniform('uInk', ctx.ink);
   if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
   sh.setUniform('uMid', midColor(s, ctx));
@@ -454,6 +498,9 @@ function shadeBalls(name, ctx) {
   const sh = getShader(s.key + ':ball', SHADE_VERT, FRAG_HEAD + s.ball);
   shader(sh);
   setCommonUniforms(sh, s, ctx);
+  // 球は面の向きが連続して変わるので、面に貼りつける BAYER / HALFTONE では継ぎ目が出る。
+  // ボールだけは常に画面に貼りつける（RANDOM は3D座標で貼れるのでそのまま）
+  sh.setUniform('uForceScreen', 1);
   noStroke();
   for (const b of ctx.balls) {
     sh.setUniform('uOffset', [b.x, b.y, b.z]);
