@@ -485,7 +485,9 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   if (!shadeBalls(shading, ctx)) {
     const ink = inkColor255(ctx);
     const paper = paperColor255(ctx);
-    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, !b.ink);
+    // 輪郭線の太さは、箱の線（STROKE がオンのとき）に揃える
+    const lineW = ctx.stroke ? ctx.strokeWeight : 1;
+    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, !b.ink, lineW);
   }
   pop();
 }
@@ -549,7 +551,7 @@ function buildWarp(L, len) {
 
 // シェーダーを使わない場合のボール。col：塗りの色 [r,g,b]（0〜255）
 // 紙の色の球（outline = true）は背景と同化するので、カメラに正対する円で輪郭線を描く
-function drawBall(pos, R, col, a, e, lineCol, outline) {
+function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1) {
   push();
   translate(pos.x, pos.y, pos.z);
   fill(col);
@@ -560,7 +562,7 @@ function drawBall(pos, R, col, a, e, lineCol, outline) {
     rotateX(e);
     noFill();
     stroke(lineCol);
-    strokeWeight(1);
+    strokeWeight(lineW);
     circle(0, 0, R * 2);
   }
   pop();
