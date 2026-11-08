@@ -24,7 +24,7 @@ let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch;
 let strokeCheck, sStrokeWeight;
-let sideSel, colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）用
+let colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
@@ -88,7 +88,6 @@ function setup() {
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
-  sideSel = makeSelect(panel, 'SIDE', ['LIGHT', 'SCREEN', 'WORLD'], 'LIGHT');  // TRI：色付きにする側面の決め方
   strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
@@ -128,7 +127,6 @@ function setup() {
     updateDitherRows();
     const tri = resolveShading(shadingSel.value()).palette === 3;
     const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
-    show(sideSel, tri);
     show(colorCPicker, tri);
     show(ballASel, tri);
     show(ballBSel, tri);
@@ -181,7 +179,6 @@ function setup() {
     ditherScreen.checked(false);
     strokeCheck.checked(false);
     colorCPicker.value(COLOR_C_DEFAULT);
-    sideSel.selected('LIGHT');
     ballASel.lit.selected(BALL_A_DEFAULT[0]); ballASel.dark.selected(BALL_A_DEFAULT[1]);
     ballBSel.lit.selected(BALL_B_DEFAULT[0]); ballBSel.dark.selected(BALL_B_DEFAULT[1]);
     ditherSel.elt.dispatchEvent(new Event('change'));
@@ -388,7 +385,6 @@ function draw() {
     const pal = { A: colA, B: colB, C: colC };
     base.uniforms = {
       uColC: colC,
-      uSideRule: ['LIGHT', 'SCREEN', 'WORLD'].indexOf(sideSel.value()),
       uBallInkLit: pal[ballASel.lit.value()], uBallInkDark: pal[ballASel.dark.value()],
       uBallPaperLit: pal[ballBSel.lit.value()], uBallPaperDark: pal[ballBSel.dark.value()],
     };
@@ -419,12 +415,6 @@ function draw() {
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
     const { eye, up } = cameraFor(a, e);
     const colBase = { ...base };
-    if (tri) {
-      // 画面の右方向（SIDE = SCREEN 用）。p5 の up は画面の下向きなので、右 = 視線 × 下
-      const fwd = p5.Vector.mult(eye, -1).normalize();
-      const right = p5.Vector.cross(fwd, up).normalize();
-      colBase.uniforms = { ...base.uniforms, uViewRight: [right.x, right.y, right.z] };
-    }
     if (lightSel.value() !== 'FIXED') {
       // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
       // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）

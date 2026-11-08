@@ -331,16 +331,12 @@ const SHADINGS = {
 
   // 3色のベタ塗り（等角図のピクセルアート風）。光の明暗は使わず、面の向きだけで塗り分ける
   //   上面＝COLOR_C、色付きの側面＝COLOR_B、もう一方の側面と底面＝背景と同じ COLOR_A
-  // 色付きにする側面の決め方（パネルの SIDE）：
-  //   LIGHT ：光の来る方を向いた側面（光源が回ると担当が入れ替わる）
-  //   SCREEN：画面の左を向いた側面（面が真横を向いた瞬間に入れ替わる）
-  //   WORLD ：±x を向いた側面（カメラが90度回るごとに左右が入れ替わって見える）
+  // 色付きの側面は ±x を向いた面に固定（光源やカメラで担当が切り替わらない。
+  // カメラが90度回るごとに、画面上の左右が入れ替わって見える）
   // ボールはセル調の2色（光の当たる側 / 影側）。色はパネルで A / B / C から選ぶ。影も輪郭線も描かない
   TRI: {
     stair: `
       uniform vec3 uColC;
-      uniform float uSideRule;   // 0 = LIGHT、1 = SCREEN、2 = WORLD
-      uniform vec3 uViewRight;   // 画面の右方向（階段ローカル座標）
 
       void main() {
         vec3 col;
@@ -349,10 +345,7 @@ const SHADINGS = {
         } else if (isBottom()) {
           col = uPaper;
         } else {
-          bool colored;
-          if (uSideRule < 0.5)      colored = dot(vNormal.xz, uLightDir.xz) > 0.0;
-          else if (uSideRule < 1.5) colored = dot(vNormal.xz, uViewRight.xz) < 0.0;
-          else                      colored = abs(vNormal.x) > abs(vNormal.z);
+          bool colored = abs(vNormal.x) > abs(vNormal.z);   // ±x を向いた面
           col = colored ? uInk : uPaper;
         }
         gl_FragColor = vec4(col, 1.0);
