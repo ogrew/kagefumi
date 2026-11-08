@@ -101,9 +101,9 @@ function setup() {
     show(ditherScreen, grain);
     show(sGrainSize, grain && !half);
     show(sDotPitch, grain && half);
-    const canStroke = resolveShading(shadingSel.value()).stroke;
-    show(strokeCheck, canStroke);
-    show(sStrokeWeight, canStroke && strokeCheck.checked());
+    const st = resolveShading(shadingSel.value()).stroke;
+    show(strokeCheck, st === true);   // 'always'（NONE）は常に線を描くので、オン・オフは出さない
+    show(sStrokeWeight, st === 'always' || (st === true && strokeCheck.checked()));
   };
   strokeCheck.changed(updateDitherRows);
   shadingSel.changed(updateDitherRows);
@@ -324,7 +324,7 @@ function draw() {
     dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
     stairShadowTone: sStairShadow.value(),
-    stroke: strokeCheck.checked(), strokeWeight: sStrokeWeight.value(),
+    stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
@@ -397,6 +397,12 @@ function columnState(c) {
 
 // 列 c の向き（1 = そのまま、-1 = 逆）。FLOW（進む向き）と ORBIT_FLOW（周回の向き）で使う
 //   SAME：全列同じ / ALTERNATE：隣どうしが逆 / OUTER_REVERSE：中央以外が逆
+// 箱と紙のボールに輪郭線を描くか（シェーディングの stroke 設定とパネルの STROKE から決める）
+function strokeOn(name) {
+  const st = resolveShading(name).stroke;
+  return st === 'always' || (st === true && strokeCheck.checked());
+}
+
 function flowDir(c, mode) {
   if (mode === 'ALTERNATE') return Math.abs(c) % 2 === 0 ? 1 : -1;
   if (mode === 'OUTER_REVERSE') return c === 0 ? 1 : -1;

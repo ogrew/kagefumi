@@ -12,7 +12,7 @@
 // 各エントリ：
 //   stair  : 階段のフラグメントシェーダー（共通ヘッダ FRAG_HEAD の後ろに連結）
 //   ball   : ボールのフラグメントシェーダー。省略すると sketch.js の通常描画になる
-//   stroke : 階段の輪郭線を描くか（パネルの STROKE でオフにできる）
+//   stroke : 階段の輪郭線。true＝パネルの STROKE でオン・オフ、'always'＝常に描く、false＝描かない
 //   shadow : 影を計算するか（false なら shadowPass を省略して軽くなる）
 //   params : シェーダーに渡す値（uniform名: 値）
 //   base   : 別エントリを継承して params だけ上書きする場合に、その名前
@@ -214,7 +214,7 @@ const SHADINGS = {
     stair: `
       void main() { gl_FragColor = vec4(uPaper, 1.0); }
     `,
-    stroke: true,
+    stroke: 'always',   // 線がないと何も見えないので、STROKE に関係なく常に描く
     shadow: false,
     params: { uPaper: [1, 1, 1], uInk: [0, 0, 0] },
   },
