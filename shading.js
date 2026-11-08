@@ -16,6 +16,8 @@
 //   shadow : 影を計算するか（false なら shadowPass を省略して軽くなる）
 //   params : シェーダーに渡す値（uniform名: 値）
 //   base   : 別エントリを継承して params だけ上書きする場合に、その名前
+//   dither : true なら粒（DITHER）で描く。パネルに DITHER などが出る
+//   palette: 3 なら3色（COLOR_A / B / C）で塗る。パネルに COLOR_C などが出て、INVERT と MIX は隠れる
 //
 // フラグメントシェーダーで使える値（共通ヘッダで宣言済み）：
 //   vNormal    面の法線（階段ローカル座標。yは下向きなので上面は (0,-1,0)）
@@ -92,7 +94,7 @@ uniform vec3 uLightDir;
 uniform float uZoom;        // 1ワールド単位あたりの画面ピクセル数
 uniform vec3 uPaper;
 uniform vec3 uInk;
-uniform vec3 uMid;          // 中間色（インクと紙を STAIR_SHADOW の割合で混ぜた色。混ぜ方は MIX）
+uniform vec3 uMid;          // 中間色（インクと紙を SHADOW_TONE の割合で混ぜた色。混ぜ方は MIX）
 uniform float uGrain;       // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
 uniform float uDotPitch;    // HALFTONE の網点の間隔（画面ピクセル）
 uniform float uDither;      // 0 = RANDOM、1 = BAYER、2 = HALFTONE
@@ -220,7 +222,7 @@ const SHADINGS = {
   },
 
   // 3値：面の明るさ（光への向き）で 白 / 中間色 / 黒 に塗り分ける。
-  // 中間色は紙とインクを STAIR_SHADOW の割合で混ぜた色。
+  // 中間色は紙とインクを SHADOW_TONE の割合で混ぜた色。
   // 階段の影の中は中間色まで暗くなり、ボールの影は常に黒
   FLAT: {
     stair: `
@@ -280,6 +282,7 @@ const SHADINGS = {
       }
     `,
     stroke: false,
+    dither: true,   // POSTER も継承する
     params: {
       uPaper: [1, 1, 1], uInk: [0, 0, 0],
       uGrain: 1.0, uAmbient: 0.06, uExposure: 1.4, uGradient: 0.35,
@@ -317,7 +320,7 @@ const SHADINGS = {
           vec2 range = faceA ? uSideA : uSideB;
           plain = mix(range.x, range.y, t);
         }
-        // 落ち影：階段の影は STAIR_SHADOW まで、ボールの影はほぼインクまで暗くする
+        // 落ち影：階段の影は SHADOW_TONE まで、ボールの影はほぼインクまで暗くする
         gl_FragColor = grain(withShadows(plain, 0.0, shadows()));
       }
     `,
@@ -325,10 +328,58 @@ const SHADINGS = {
       uTopTone: 0.2, uSideA: [1.0, 0.08], uSideB: [0.4, 0.0],
     },
   },
+
+  // 3色のベタ塗り（等角図のピクセルアート風）。光の明暗は使わず、面の向きだけで塗り分ける
+  //   上面＝COLOR_C、色付きの側面＝COLOR_B、もう一方の側面と底面＝背景と同じ COLOR_A
+  // 色付きにする側面の決め方（パネルの SIDE）：
+  //   LIGHT ：光の来る方を向いた側面（光源が回ると担当が入れ替わる）
+  //   SCREEN：画面の左を向いた側面（面が真横を向いた瞬間に入れ替わる）
+  //   WORLD ：±x を向いた側面（カメラが90度回るごとに左右が入れ替わって見える）
+  // ボールはセル調の2色（光の当たる側 / 影側）。色はパネルで A / B / C から選ぶ。影も輪郭線も描かない
+  TRI: {
+    stair: `
+      uniform vec3 uColC;
+      uniform float uSideRule;   // 0 = LIGHT、1 = SCREEN、2 = WORLD
+      uniform vec3 uViewRight;   // 画面の右方向（階段ローカル座標）
+
+      void main() {
+        vec3 col;
+        if (isTop()) {
+          col = uColC;
+        } else if (isBottom()) {
+          col = uPaper;
+        } else {
+          bool colored;
+          if (uSideRule < 0.5)      colored = dot(vNormal.xz, uLightDir.xz) > 0.0;
+          else if (uSideRule < 1.5) colored = dot(vNormal.xz, uViewRight.xz) < 0.0;
+          else                      colored = abs(vNormal.x) > abs(vNormal.z);
+          col = colored ? uInk : uPaper;
+        }
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+    ball: `
+      uniform float uToon;       // 光の当たる側と影側の境目（lambert の値）
+      uniform vec3 uBallInkLit;  uniform vec3 uBallInkDark;     // ボールA（インクのボール）
+      uniform vec3 uBallPaperLit; uniform vec3 uBallPaperDark;  // ボールB（紙のボール）
+
+      void main() {
+        bool lit = lambert() > uToon;
+        vec3 col = uIsInk > 0.5
+          ? (lit ? uBallInkLit : uBallInkDark)
+          : (lit ? uBallPaperLit : uBallPaperDark);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+    stroke: false,
+    shadow: false,
+    palette: 3,
+    params: { uToon: 0.35 },
+  },
 };
 // 紙（uPaper）とインク（uInk）は、パネルの COLOR_A / COLOR_B（INVERT で入れ替え）が
 // どのシェーディングにも上書きで使われる（ctx.paper / ctx.ink）。params の値はその予備。
-// 中間色（uMid）は、インクと紙を STAIR_SHADOW の割合で混ぜた色。混ぜ方は MIX で選ぶ
+// 中間色（uMid）は、インクと紙を SHADOW_TONE の割合で混ぜた色。混ぜ方は MIX で選ぶ
 
 // ---------------------------------------------------------------------
 // 中間色の計算（色はすべて 0〜1 の sRGB）
@@ -497,6 +548,8 @@ function setCommonUniforms(sh, s, ctx) {
   if (ctx.ink) sh.setUniform('uInk', ctx.ink);
   if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
   sh.setUniform('uMid', midColor(s, ctx));
+  // シェーディング固有の値（sketch.js が ctx.uniforms に入れて渡す。TRI の色など）
+  if (ctx.uniforms) for (const [k, v] of Object.entries(ctx.uniforms)) sh.setUniform(k, v);
 
   const lm = ctx.light;
   sh.setUniform('uUseShadow', ctx.useShadow && lm ? 1 : 0);
@@ -572,7 +625,7 @@ function paperColor255(ctx) {
   return (ctx.paper || [1, 1, 1]).map(c => c * 255);
 }
 
-// 中間色：インクと紙を STAIR_SHADOW の割合で混ぜる（0 でインク、1 で紙）
+// 中間色：インクと紙を SHADOW_TONE の割合で混ぜる（0 でインク、1 で紙）
 function midColor(s, ctx) {
   const ink = ctx.ink || s.params.uInk || [0, 0, 0];
   const paper = ctx.paper || s.params.uPaper || [1, 1, 1];

@@ -18,15 +18,20 @@ let paused = false;
 let pauseBtn;
 let shadingSel;   // シェーディングの選択（shading.js の SHADINGS のキー）
 let lightSel;     // 光源の置き方（CAMERA / FIXED）
-let sLightUp, sStairShadow, sSunSpeed, sSunRadius;
+let sLightUp, sShadowTone, sSunSpeed, sSunRadius;
 let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジアン）。初期値は以前の固定の向きに合わせた
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch;
 let strokeCheck, sStrokeWeight;
+let sideSel, colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
+const COLOR_C_DEFAULT = '#5b4dff';   // 3色のシェーディング（TRI）の3色目：上面
+// TRI のボールの色（光の当たる側, 影側）。A / B / C のどれか
+const BALL_A_DEFAULT = ['C', 'B'];
+const BALL_B_DEFAULT = ['A', 'B'];
 
 function setup() {
   createCanvas(windowWidth, windowHeight, WEBGL);
@@ -83,6 +88,7 @@ function setup() {
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
+  sideSel = makeSelect(panel, 'SIDE', ['LIGHT', 'SCREEN', 'WORLD'], 'LIGHT');  // TRI：色付きにする側面の決め方
   strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
@@ -90,11 +96,10 @@ function setup() {
   ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
   sGrainSize   = makeSlider(panel, 'GRAIN_SIZE', 1, 6, 1);           // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
   sDotPitch    = makeSlider(panel, 'DOT_PITCH', 5, 20, 8);           // HALFTONE の網点の間隔（画面ピクセル）
-  sStairShadow = makeSlider(panel, 'STAIR_SHADOW', 0, 1, 0.5, 0.01); // 階段の影の中の明るさ（1＝階段の影なし）
 
   // シェーディングとディザの種類に関係する項目だけを表示する
   const updateDitherRows = () => {
-    const grain = !['NONE', 'FLAT'].includes(shadingSel.value());   // 粒（DITHER）で描くシェーディング
+    const grain = resolveShading(shadingSel.value()).dither === true;   // 粒（DITHER）で描くシェーディング
     const half = ditherSel.value() === 'HALFTONE';
     const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
     show(ditherSel, grain);
@@ -104,11 +109,8 @@ function setup() {
     const st = resolveShading(shadingSel.value()).stroke;
     show(strokeCheck, st === true);   // 'always'（NONE）は常に線を描くので、オン・オフは出さない
     show(sStrokeWeight, st === 'always' || (st === true && strokeCheck.checked()));
+    show(sShadowTone, resolveShading(shadingSel.value()).shadow !== false);
   };
-  strokeCheck.changed(updateDitherRows);
-  shadingSel.changed(updateDitherRows);
-  ditherSel.changed(updateDitherRows);
-  updateDitherRows();
 
   // 2色：A＝背景・光の当たる面（紙）、B＝影・暗い面（インク）。INVERT で役割を入れ替える
   makeSection(panel, 'COLOR');
@@ -116,12 +118,36 @@ function setup() {
   colorBPicker = makeColor(panel, 'COLOR_B', COLOR_B_DEFAULT);
   invertCheck  = makeCheck(panel, 'INVERT', false);
   mixSel       = makeSelect(panel, 'MIX', ['OKLAB', 'SRGB', 'LINEAR'], 'OKLAB'); // 中間色の計算方法
+  // 3色のシェーディング（TRI）のときだけ使う色
+  colorCPicker = makeColor(panel, 'COLOR_C', COLOR_C_DEFAULT);
+  ballASel = makeBallColors(panel, 'BALL_A', BALL_A_DEFAULT);   // ボールA：光の当たる側, 影側
+  ballBSel = makeBallColors(panel, 'BALL_B', BALL_B_DEFAULT);
 
+  // シェーディングに関係する項目だけを表示する
+  const updateShadingRows = () => {
+    updateDitherRows();
+    const tri = resolveShading(shadingSel.value()).palette === 3;
+    const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
+    show(sideSel, tri);
+    show(colorCPicker, tri);
+    show(ballASel, tri);
+    show(ballBSel, tri);
+    show(invertCheck, !tri);   // 3色では A / B の入れ替えは使わない
+    show(mixSel, !tri);        // 中間色も使わない
+  };
   makeSection(panel, 'LIGHT');        // 光源：CAMERA＝カメラの少し上に追従、FIXED＝太陽が円周軌道を回る
   lightSel = makeSelect(panel, 'LIGHT', ['CAMERA', 'FIXED'], 'CAMERA');
   sLightUp = makeSlider(panel, 'LIGHT_UP',  0,   80,  25);   // LIGHT=CAMERA：カメラから何度上に光源を置くか
   sSunSpeed  = makeSlider(panel, 'SUN_SPEED', -2,   2, 0.3, 0.05); // LIGHT=FIXED：太陽が軌道を回る速さ（度/フレーム）
   sSunRadius = makeSlider(panel, 'SUN_RADIUS', 0, 3000, 600, 10);  // LIGHT=FIXED：軌道の半径（高さは SUN_HEIGHT）
+  // 階段・踊り場の影の中の明るさ（0＝インク、1＝影なし）。FLAT では中間色の混ぜ具合にもなる
+  sShadowTone = makeSlider(panel, 'SHADOW_TONE', 0, 1, 0.5, 0.01);
+
+  // シェーディングを切り替えたときなどに、関係する項目だけを表示する
+  strokeCheck.changed(updateShadingRows);
+  shadingSel.changed(updateShadingRows);
+  ditherSel.changed(updateShadingRows);
+  updateShadingRows();
 
   // 光源の種類に関係するスライダーだけを表示する
   const updateLightRows = () => {
@@ -154,6 +180,10 @@ function setup() {
     ditherSel.selected('RANDOM');
     ditherScreen.checked(false);
     strokeCheck.checked(false);
+    colorCPicker.value(COLOR_C_DEFAULT);
+    sideSel.selected('LIGHT');
+    ballASel.lit.selected(BALL_A_DEFAULT[0]); ballASel.dark.selected(BALL_A_DEFAULT[1]);
+    ballBSel.lit.selected(BALL_B_DEFAULT[0]); ballBSel.dark.selected(BALL_B_DEFAULT[1]);
     ditherSel.elt.dispatchEvent(new Event('change'));
     flowSel.selected('ALTERNATE');
     orbitFlowSel.selected('SAME');
@@ -203,7 +233,27 @@ function makeColor(parent, label, value) {
   const picker = createColorPicker(value).parent(row);
   picker.style('width', '60px');
   picker.style('height', '24px');
+  picker.row = row;   // 行ごと表示・非表示を切り替えるため
   return picker;
+}
+
+// ボールの色の組（光の当たる側 / 影側）を A / B / C から選ぶ行。{ lit, dark, row } を返す
+function makeBallColors(parent, label, [lit, dark]) {
+  const row = createDiv().parent(parent);
+  row.style('display', 'flex');
+  row.style('align-items', 'center');
+  row.style('gap', '6px');
+  row.style('margin', '2px 0');
+  createSpan(label).parent(row).style('width', '140px');
+  const make = (val, name) => {
+    createSpan(name).parent(row).style('font-size', '12px');
+    const sel = createSelect().parent(row);
+    sel.style('font', '16px monospace');
+    for (const o of ['A', 'B', 'C']) sel.option(o);
+    sel.selected(val);
+    return sel;
+  };
+  return { lit: make(lit, 'LIT'), dark: make(dark, 'DARK'), row };
 }
 
 // ラベル付きのチェックボックス（行はスライダーと同じ並び）
@@ -283,7 +333,10 @@ function draw() {
     return [red(c) / 255, green(c) / 255, blue(c) / 255];
   };
   const colA = toRgb01(colorAPicker), colB = toRgb01(colorBPicker);
-  const inverted = invertCheck.checked();
+  const shading = shadingSel.value();
+  const tri = resolveShading(shading).palette === 3;
+  const colC = toRgb01(colorCPicker);
+  const inverted = invertCheck.checked() && !tri;   // 3色のときは入れ替えない
   const paperRGB = inverted ? colB : colA;
   const inkRGB = inverted ? colA : colB;
   background(paperRGB[0] * 255, paperRGB[1] * 255, paperRGB[2] * 255);
@@ -316,14 +369,13 @@ function draw() {
   const hw = width / 2 / zoom;
   const hh = height / 2 / zoom;
 
-  const shading = shadingSel.value();
   // 全列で共通の描画設定（光源・色・ディザ）
   const base = {
     zoom,
     paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
     dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
-    stairShadowTone: sStairShadow.value(),
+    stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
@@ -331,6 +383,16 @@ function draw() {
     ballReach: p.R + 1.5 * p.step,
     step: p.step, H: p.H,   // POSTER のグラデーション用
   };
+  if (tri) {
+    // 3色のシェーディング：A / B / C の名前から色を引く
+    const pal = { A: colA, B: colB, C: colC };
+    base.uniforms = {
+      uColC: colC,
+      uSideRule: ['LIGHT', 'SCREEN', 'WORLD'].indexOf(sideSel.value()),
+      uBallInkLit: pal[ballASel.lit.value()], uBallInkDark: pal[ballASel.dark.value()],
+      uBallPaperLit: pal[ballBSel.lit.value()], uBallPaperDark: pal[ballBSel.dark.value()],
+    };
+  }
   if (lightSel.value() === 'FIXED') {
     // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
     // （yは下向きなので、上は -y）
@@ -357,6 +419,12 @@ function draw() {
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
     const { eye, up } = cameraFor(a, e);
     const colBase = { ...base };
+    if (tri) {
+      // 画面の右方向（SIDE = SCREEN 用）。p5 の up は画面の下向きなので、右 = 視線 × 下
+      const fwd = p5.Vector.mult(eye, -1).normalize();
+      const right = p5.Vector.cross(fwd, up).normalize();
+      colBase.uniforms = { ...base.uniforms, uViewRight: [right.x, right.y, right.z] };
+    }
     if (lightSel.value() !== 'FIXED') {
       // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
       // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）
