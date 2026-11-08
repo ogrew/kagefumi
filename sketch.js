@@ -91,7 +91,7 @@ function setup() {
 
   // シェーディングとディザの種類に関係する項目だけを表示する
   const updateDitherRows = () => {
-    const grain = shadingSel.value() === 'GRAIN';
+    const grain = !['NONE', 'FLAT'].includes(shadingSel.value());   // 粒（DITHER）で描くシェーディング
     const half = ditherSel.value() === 'HALFTONE';
     const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
     show(ditherSel, grain);
@@ -320,6 +320,7 @@ function draw() {
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
     ballReach: p.R + 1.5 * p.step,
+    step: p.step, H: p.H,   // POSTER のグラデーション用
   };
   if (lightSel.value() === 'FIXED') {
     // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る

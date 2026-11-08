@@ -287,6 +287,44 @@ const SHADINGS = {
       uBallTone: [0.12, 1.0], uInkBallTone: [0.0, 0.3],
     },
   },
+
+  // ポスター風：明暗を「面の向き」と「高さ」で決めるグラフィック的な塗り分け。
+  //   上面：濃いめのベタ（真っ黒だとボールの影が見えなくなるので少し明るく）
+  //   縦の面（向きA＝光の方を向いた面）：上が白、下へいくほどインクになるグラデーション
+  //   縦の面（向きB＝光に背を向けた面）：Aを全体に濃くしたグラデーション
+  // グラデーションは面ごとではなく「高さ」で決まるので、壁から段へまたがって続き、
+  // 踊り場1つぶん（step）下るごとに繰り返す。光源が回ると、A と B の担当面が入れ替わる
+  POSTER: {
+    base: 'GRAIN',   // ボールの塗りと params を引き継ぐ
+    stair: `
+      uniform float uStep;       // 踊り場1つぶんの高低差
+      uniform float uH;          // 踊り場の厚さ
+      uniform float uTopTone;    // 上面の明るさ
+      uniform vec2 uSideA;       // 向きAの明るさ（上端, 下端）
+      uniform vec2 uSideB;       // 向きBの明るさ（上端, 下端）
+
+      void main() {
+        float plain;
+        if (isTop()) {
+          plain = uTopTone;
+        } else if (isBottom()) {
+          plain = 0.0;
+        } else {
+          // 高さの割合：0 = 踊り場の上面の高さ、1 = 1つ下の踊り場の上面の高さ（yは下向き）
+          float t = fract((vPos.y + uH * 0.5) / uStep);
+          // 面の水平な向きが、光の来る方向を向いていれば A
+          bool faceA = dot(vNormal.xz, uLightDir.xz) > 0.0;
+          vec2 range = faceA ? uSideA : uSideB;
+          plain = mix(range.x, range.y, t);
+        }
+        // 落ち影：階段の影は STAIR_SHADOW まで、ボールの影はほぼインクまで暗くする
+        gl_FragColor = grain(withShadows(plain, 0.0, shadows()));
+      }
+    `,
+    params: {
+      uTopTone: 0.2, uSideA: [1.0, 0.08], uSideB: [0.4, 0.0],
+    },
+  },
 };
 // 紙（uPaper）とインク（uInk）は、パネルの COLOR_A / COLOR_B（INVERT で入れ替え）が
 // どのシェーディングにも上書きで使われる（ctx.paper / ctx.ink）。params の値はその予備。
@@ -343,7 +381,10 @@ function resolveShading(name) {
   const s = SHADINGS[name];
   if (!s.base) return { shadow: true, ...s, key: name };
   const b = resolveShading(s.base);
-  return { ...b, ...s, params: { ...b.params, ...s.params } };
+  // 自前の塗り（stair / ball）を持つなら、シェーダーのキャッシュは自分の名前で持つ。
+  // params だけを上書きする場合は、親と同じシェーダーを使い回す
+  const key = (s.stair || s.ball) ? name : b.key;
+  return { ...b, ...s, key, params: { ...b.params, ...s.params } };
 }
 
 function getShader(id, vert, frag) {
@@ -450,6 +491,9 @@ function setCommonUniforms(sh, s, ctx) {
   sh.setUniform('uForceScreen', 0);
   if (ctx.grainSize) sh.setUniform('uGrain', ctx.grainSize);
   sh.setUniform('uDotPitch', ctx.dotPitch || 12);
+  // 形とカメラの情報（POSTER が使う）
+  if (ctx.step) sh.setUniform('uStep', ctx.step);
+  if (ctx.H) sh.setUniform('uH', ctx.H);
   if (ctx.ink) sh.setUniform('uInk', ctx.ink);
   if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
   sh.setUniform('uMid', midColor(s, ctx));
