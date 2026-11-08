@@ -23,6 +23,7 @@ let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジ�
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch;
+let strokeCheck, sStrokeWeight;
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
@@ -82,6 +83,8 @@ function setup() {
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
+  strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
+  sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
   ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE'], 'RANDOM');
   ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
@@ -98,7 +101,11 @@ function setup() {
     show(ditherScreen, grain);
     show(sGrainSize, grain && !half);
     show(sDotPitch, grain && half);
+    const canStroke = resolveShading(shadingSel.value()).stroke;
+    show(strokeCheck, canStroke);
+    show(sStrokeWeight, canStroke && strokeCheck.checked());
   };
+  strokeCheck.changed(updateDitherRows);
   shadingSel.changed(updateDitherRows);
   ditherSel.changed(updateDitherRows);
   updateDitherRows();
@@ -146,6 +153,7 @@ function setup() {
     mixSel.selected('OKLAB');
     ditherSel.selected('RANDOM');
     ditherScreen.checked(false);
+    strokeCheck.checked(false);
     ditherSel.elt.dispatchEvent(new Event('change'));
     flowSel.selected('ALTERNATE');
     orbitFlowSel.selected('SAME');
@@ -316,6 +324,7 @@ function draw() {
     dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
     stairShadowTone: sStairShadow.value(),
+    stroke: strokeCheck.checked(), strokeWeight: sStrokeWeight.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする

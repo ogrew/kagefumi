@@ -12,7 +12,7 @@
 // 各エントリ：
 //   stair  : 階段のフラグメントシェーダー（共通ヘッダ FRAG_HEAD の後ろに連結）
 //   ball   : ボールのフラグメントシェーダー。省略すると sketch.js の通常描画になる
-//   stroke : 階段の輪郭線を描くか
+//   stroke : 階段の輪郭線を描くか（パネルの STROKE でオフにできる）
 //   shadow : 影を計算するか（false なら shadowPass を省略して軽くなる）
 //   params : シェーダーに渡す値（uniform名: 値）
 //   base   : 別エントリを継承して params だけ上書きする場合に、その名前
@@ -525,7 +525,10 @@ function beginShading(name, ctx) {
   shader(sh);
   setCommonUniforms(sh, s, ctx);
   sh.setUniform('uObjScale', 1.0);
-  if (s.stroke) stroke(inkColor255(ctx)); else noStroke();
+  if (s.stroke && ctx.stroke !== false) {
+    stroke(inkColor255(ctx));
+    strokeWeight(ctx.strokeWeight || 1);
+  } else noStroke();
   return sh;
 }
 
@@ -533,6 +536,7 @@ function beginShading(name, ctx) {
 function endShading(ctx) {
   resetShader();
   stroke(inkColor255(ctx));
+  strokeWeight(1);
 }
 
 // ボールをシェーダーで描く。このシェーディングにボール用の塗りがなければ false を返す
