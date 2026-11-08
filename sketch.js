@@ -28,7 +28,7 @@ let colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
-const COLOR_C_DEFAULT = '#5b4dff';   // 3色のシェーディング（TRI）の3色目：上面
+const COLOR_C_DEFAULT = '#ee2b2b';   // 3色のシェーディング（TRI）の3色目：上面
 // TRI のボールの色（光の当たる側, 影側）。A / B / C のどれか
 const BALL_A_DEFAULT = ['C', 'B'];
 const BALL_B_DEFAULT = ['A', 'B'];
@@ -87,7 +87,7 @@ function setup() {
   makeGroup(panel, 'LOOK');
 
   makeSection(panel, 'SHADING');      // 塗り方と影
-  shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'GRAIN');
+  shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'FLAT');
   strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
