@@ -485,9 +485,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   if (!shadeBalls(shading, ctx)) {
     const ink = inkColor255(ctx);
     const paper = paperColor255(ctx);
-    // 輪郭線の太さは、箱の線（STROKE がオンのとき）に揃える
-    const lineW = ctx.stroke ? ctx.strokeWeight : 1;
-    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, !b.ink, lineW);
+    // 紙のボールの輪郭線は、箱の線と同じく STROKE のオン・オフと太さに従う
+    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight);
   }
   pop();
 }
