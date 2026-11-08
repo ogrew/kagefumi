@@ -13,8 +13,6 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
-let u = 0;
-let uTotal = 0;   // 折り返さない累計（停止の抽選用）
 let orbit = 0;
 let paused = false;
 let pauseBtn;
@@ -25,6 +23,7 @@ let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジ�
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch;
+let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
 
@@ -71,6 +70,12 @@ function setup() {
   sRoll  = makeSlider(panel, 'ROLL',      -90,   90,   0);
   sZoom  = makeSlider(panel, 'ZOOM',      0.3,   3,   1, 0.01);
   sOrbit = makeSlider(panel, 'ORBIT_SPEED', 0,    1, 0.2, 0.01);
+
+  makeSection(panel, 'LAYOUT');       // 階段を画面の横一列に何本並べるか
+  sColumns    = makeSlider(panel, 'COLUMNS',      1,    9,   1, 2);   // 列の数（中央を挟んで左右対称になるよう奇数）
+  sColSpacing = makeSlider(panel, 'COL_SPACING', 200, 1500, 600, 10); // 列の中心どうしの間隔（ワールド単位）
+  flowSel     = makeSelect(panel, 'FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'ALTERNATE'); // 各列の進む向き
+  orbitFlowSel = makeSelect(panel, 'ORBIT_FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'SAME'); // 各列のカメラが周回する向き
 
   // ===== LOOK（シェーダー側：見た目） =====
   makeGroup(panel, 'LOOK');
@@ -142,6 +147,8 @@ function setup() {
     ditherSel.selected('RANDOM');
     ditherScreen.checked(false);
     ditherSel.elt.dispatchEvent(new Event('change'));
+    flowSel.selected('ALTERNATE');
+    orbitFlowSel.selected('SAME');
   });
 
   // PAUSE：時間（階段・球・カメラ周回）を止める。スライダー操作は静止中も反映される
@@ -296,28 +303,100 @@ function draw() {
   const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
 
   if (!paused) orbit += sOrbit.value();
-  const a = radians(sAzim.value() + orbit);
-  const r = CAM_DIST * cos(e);
-  const eye = createVector(r * sin(a), -CAM_DIST * sin(e), r * cos(a));
 
   // 正投影なので「視野角」の代わりに、見える範囲の広さ（ZOOM）で調整する
   const hw = width / 2 / zoom;
   const hh = height / 2 / zoom;
-  ortho(-hw, hw, -hh, hh, CAM_DIST - sceneR, CAM_DIST + sceneR);
 
+  const shading = shadingSel.value();
+  // 全列で共通の描画設定（光源・色・ディザ）
+  const base = {
+    zoom,
+    paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
+    dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
+    grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
+    stairShadowTone: sStairShadow.value(),
+    // ボールの影が届く高さの範囲（ボール中心から上下に）。
+    // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
+    // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
+    ballReach: p.R + 1.5 * p.step,
+  };
+  if (lightSel.value() === 'FIXED') {
+    // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
+    // （yは下向きなので、上は -y）
+    if (!paused) sunAngle += radians(sSunSpeed.value());
+    const r = sSunRadius.value();
+    base.lightDir = [r * cos(sunAngle), -SUN_HEIGHT, r * sin(sunAngle)];
+  }
+  // LIGHT=CAMERA のときは、光の向きを列ごとのカメラから計算する（列のループの中）
+
+  // 列：画面の横一列に COLUMNS 本並べる。c は中央を0とした列番号（左が負、右が正）
+  // 各列は同じカメラで、投影範囲だけを横にずらして描く（列どうしの影は落とし合わない）
+  const n = sColumns.value();
+  const spacing = sColSpacing.value();
+  const near = CAM_DIST - sceneR, far = CAM_DIST + sceneR;
+  for (let i = 0; i < n; i++) {
+    const c = i - (n - 1) / 2;
+    const st = columnState(c);
+    const dir = flowDir(c, flowSel.value());
+    const du = paused ? 0 : dir * sSpeed.value() / p.step;
+    st.u = (((st.u + du) % 2) + 2) % 2;
+    st.uTotal += du;
+
+    // この列のカメラ：周回の向きを ORBIT_FLOW で列ごとに変える
+    const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
+    const { eye, up } = cameraFor(a, e);
+    const colBase = { ...base };
+    if (lightSel.value() !== 'FIXED') {
+      // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
+      // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）
+      const toCam = eye.copy().normalize();
+      const lu = radians(sLightUp.value());
+      const L = p5.Vector.mult(toCam, cos(lu)).sub(p5.Vector.mult(up, sin(lu)));
+      colBase.lightDir = [L.x, L.y, L.z];
+    }
+
+    drawColumn(p, st, c, colBase, shading, limitY, () => {
+      // この列の位置へ投影範囲をずらす（影の下準備のあとに設定し直す）
+      const dx = c * spacing;
+      ortho(-hw - dx, hw - dx, -hh, hh, near, far);
+      camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
+    }, a, e);
+  }
+}
+
+// 方位角 a・仰角 e のカメラの位置と上方向（ROLL 込み）
+function cameraFor(a, e) {
+  const r = CAM_DIST * cos(e);
+  const eye = createVector(r * sin(a), -CAM_DIST * sin(e), r * cos(a));
   // ロール：視線方向を軸に、カメラの上方向ベクトルを回す
   const fwd = p5.Vector.mult(eye, -1).normalize();
   const right = p5.Vector.cross(fwd, createVector(0, 1, 0)).normalize();
   const up0 = p5.Vector.cross(right, fwd);
   const roll = radians(sRoll.value());
   const up = p5.Vector.mult(up0, cos(roll)).add(p5.Vector.mult(right, sin(roll)));
-  camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
+  return { eye, up };
+}
 
-  const du = paused ? 0 : sSpeed.value() / p.step;
-  u += du;
-  u = ((u % 2) + 2) % 2;
-  uTotal += du;
+// 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
+const columnStates = new Map();
+function columnState(c) {
+  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0 });
+  return columnStates.get(c);
+}
 
+// 列 c の向き（1 = そのまま、-1 = 逆）。FLOW（進む向き）と ORBIT_FLOW（周回の向き）で使う
+//   SAME：全列同じ / ALTERNATE：隣どうしが逆 / OUTER_REVERSE：中央以外が逆
+function flowDir(c, mode) {
+  if (mode === 'ALTERNATE') return Math.abs(c) % 2 === 0 ? 1 : -1;
+  if (mode === 'OUTER_REVERSE') return c === 0 ? 1 : -1;
+  return 1;
+}
+
+// 1列ぶんを描く：ボールの位置 → 影の下準備 → 階段 → ボール
+// setView()：この列の投影範囲とカメラを設定する関数
+function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
+  const u = st.u;
   fill(255);
   stroke(0);
   strokeWeight(1);
@@ -339,34 +418,14 @@ function draw() {
     const prob = sStopP.value();
     for (let j = jMin; j <= jMax; j++) {
       const off = j * PAIR_INTERVAL;
-      const qA = stopWarp(u + off, uTotal + off, j, 0, prob, warpA);
-      const qB = stopWarp(u + off - B_OFFSET, uTotal + off - B_OFFSET, j, 1, prob, warpB);
+      const qA = stopWarp(u + off, st.uTotal + off, j, 0, prob, warpA, c);
+      const qB = stopWarp(u + off - B_OFFSET, st.uTotal + off - B_OFFSET, j, 1, prob, warpB, c);
       balls.push({ ...ballPos(qA, p, LA), r: p.R, ink: true });
       balls.push({ ...ballPos(qB, p, LB), r: p.R, ink: false });
     }
   }
 
-  const shading = shadingSel.value();
-  const ctx = {
-    zoom, balls, centerY: u * p.step,
-    paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
-    dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
-    grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
-  };
-  if (lightSel.value() === 'FIXED') {
-    // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
-    // （yは下向きなので、上は -y）
-    if (!paused) sunAngle += radians(sSunSpeed.value());
-    const r = sSunRadius.value();
-    ctx.lightDir = [r * cos(sunAngle), -SUN_HEIGHT, r * sin(sunAngle)];
-  } else {
-    // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
-    // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）
-    const toCam = eye.copy().normalize();
-    const lu = radians(sLightUp.value());
-    const L = p5.Vector.mult(toCam, cos(lu)).sub(p5.Vector.mult(up, sin(lu)));
-    ctx.lightDir = [L.x, L.y, L.z];
-  }
+  const ctx = { ...base, balls, centerY: u * p.step };
 
   // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
   const geo = stairGeometry(p);
@@ -382,11 +441,6 @@ function draw() {
     z: [-p.D / 2, p.D / 2],
   };
   const casterY = [bounds.y[0] - SHADOW_EXTRA * p.step, bounds.y[1] + SHADOW_EXTRA * p.step];
-  ctx.stairShadowTone = sStairShadow.value();
-  // ボールの影が届く高さの範囲（ボール中心から上下に）。
-  // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
-  // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
-  ctx.ballReach = p.R + 1.5 * p.step;
   shadowPass(shading, ctx, bounds, casterY,
     (dsh) => {   // 階段・踊り場
       dsh.setUniform('uObjScale', 1.0);
@@ -404,6 +458,7 @@ function draw() {
       }
     });
 
+  setView();
   push();
   translate(0, -u * p.step, 0);
   const sh = beginShading(shading, ctx);
@@ -427,11 +482,12 @@ function draw() {
 
 // 停止の抽選：このサイクルで止まるなら、サイクル内の進みをワープさせる
 // q：折り返しありの位置、qAbs：折り返しなしの位置（抽選用）、id：0=A,1=B
-function stopWarp(q, qAbs, j, id, prob, warp) {
+// col：列番号（列ごとに抽選結果を変えて、止まるタイミングがそろわないようにする）
+function stopWarp(q, qAbs, j, id, prob, warp, col = 0) {
   if (!warp) return q;
   const n = floor(q);
   const f = q - n;
-  if (hash3(j, id, floor(qAbs)) >= prob) return q;
+  if (hash3(j + col * 1013, id, floor(qAbs)) >= prob) return q;
   const x = f * WARP_N;
   const i = min(floor(x), WARP_N - 1);
   return n + lerp(warp[i], warp[i + 1], x - i);
