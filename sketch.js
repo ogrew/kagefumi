@@ -22,7 +22,7 @@ let sLightUp, sShadowTone, sSunSpeed, sSunRadius;
 let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジアン）。初期値は以前の固定の向きに合わせた
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
-let ditherSel, ditherScreen, sGrainSize, sDotPitch;
+let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
 let strokeCheck, sStrokeWeight;
 let colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
@@ -91,10 +91,11 @@ function setup() {
   strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
-  ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE'], 'RANDOM');
+  ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE', 'HATCH'], 'RANDOM');
   ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
   sGrainSize   = makeSlider(panel, 'GRAIN_SIZE', 1, 6, 1);           // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
   sDotPitch    = makeSlider(panel, 'DOT_PITCH', 5, 20, 8);           // HALFTONE の網点の間隔（画面ピクセル）
+  sHatchPitch  = makeSlider(panel, 'HATCH_PITCH', 3, 16, 6);         // HATCH の線の間隔（画面ピクセル）
 
   // シェーディングとディザの種類に関係する項目だけを表示する
   const updateDitherRows = () => {
@@ -103,8 +104,10 @@ function setup() {
     const show = (el, on) => el.row.style('display', on ? 'flex' : 'none');
     show(ditherSel, grain);
     show(ditherScreen, grain);
-    show(sGrainSize, grain && !half);
+    const hatch = ditherSel.value() === 'HATCH';
+    show(sGrainSize, grain && !half && !hatch);   // RANDOM / BAYER のみ
     show(sDotPitch, grain && half);
+    show(sHatchPitch, grain && hatch);
     const st = resolveShading(shadingSel.value()).stroke;
     show(strokeCheck, st === true);   // 'always'（NONE）は常に線を描くので、オン・オフは出さない
     show(sStrokeWeight, st === 'always' || (st === true && strokeCheck.checked()));
@@ -261,10 +264,10 @@ function makeCheck(parent, label, checked) {
   row.style('gap', '6px');
   row.style('margin', '2px 0');
   createSpan(label).parent(row).style('width', '140px');
-  const box = createCheckbox('', checked).parent(row);
-  box.elt.querySelector('input').style.transform = 'scale(1.3)';
-  box.row = row;   // 行ごと表示・非表示を切り替えるため
-  return box;
+  const cb = createCheckbox('', checked).parent(row);
+  cb.elt.querySelector('input').style.transform = 'scale(1.3)';
+  cb.row = row;   // 行ごと表示・非表示を切り替えるため
+  return cb;
 }
 
 // ラベル付きのプルダウン（行はスライダーと同じ並び）
@@ -371,7 +374,7 @@ function draw() {
     zoom,
     paper: paperRGB, ink: inkRGB, mixMode: mixSel.value(),
     dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
-    grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(),
+    grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(), hatchPitch: sHatchPitch.value(),
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
@@ -415,6 +418,15 @@ function draw() {
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
     const { eye, up } = cameraFor(a, e);
     const colBase = { ...base };
+    // 画面の右方向と下方向（階段ローカル座標）。HATCH の線の間隔を画面のピクセルで測るのに使う
+    // （p5 の up ベクトルは画面の下向き）
+    const fwd = p5.Vector.mult(eye, -1).normalize();
+    const right = p5.Vector.cross(fwd, up).normalize();
+    colBase.uniforms = {
+      ...base.uniforms,
+      uViewRight: [right.x, right.y, right.z],
+      uViewDown: [up.x, up.y, up.z],
+    };
     if (lightSel.value() !== 'FIXED') {
       // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
       // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）

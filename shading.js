@@ -97,7 +97,8 @@ uniform vec3 uInk;
 uniform vec3 uMid;          // 中間色（インクと紙を SHADOW_TONE の割合で混ぜた色。混ぜ方は MIX）
 uniform float uGrain;       // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
 uniform float uDotPitch;    // HALFTONE の網点の間隔（画面ピクセル）
-uniform float uDither;      // 0 = RANDOM、1 = BAYER、2 = HALFTONE
+uniform float uHatchPitch;  // HATCH の線の間隔（画面ピクセル）
+uniform float uDither;      // 0 = RANDOM、1 = BAYER、2 = HALFTONE、3 = HATCH
 uniform float uDitherScreen;// 1 なら模様を画面に貼りつける
 uniform float uForceScreen; // 1 なら常に画面に貼りつける（ボール用。BAYER / HALFTONE のみ）
 uniform float uIsInk;
@@ -189,7 +190,61 @@ float bayer2(vec2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75);
 float bayer4(vec2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(vec2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
 
+// HATCH：ペン画のハッチング。線の太さと間隔はすべて同じで、暗くなるほど向きの違う線の層が加わる
+//   1層目：どんなに明るい面にも引く（真っ白な面を作らない）
+//   明るさ 0.7 未満：2層目 / 0.45 未満：3層目 / 0.2 未満：4層目 / 0.05 未満：ベタ
+// 線の向き：
+//   面に貼りつける場合は、面の形に沿わせる（建築パース風）
+//     壁：1層目＝縦線、2層目＝横線 / 上面：1層目＝階段の進む向き（x）に沿う線、2層目＝それと直角
+//     3・4層目＝その2つの斜め
+//     線の間隔と太さは画面のピクセルで測る（斜めから見た面でも、線が細く詰まって見えない）。
+//     位置は面の座標から計算するので、階段が動いても線は面に貼りついたまま動く
+//   画面に貼りつける場合（DITHER_SCREEN、ボール）：45度・-45度・水平・垂直
+uniform vec3 uViewRight;   // 画面の右方向（階段ローカル座標）
+uniform vec3 uViewDown;    // 画面の下方向
+
+const float HATCH_HALF_W = 0.16;   // 線の半分の太さ（間隔に対する割合）
+
+// 画面上の方向 n に対して垂直な線の並び。p は画面上の位置（ピクセル）
+float hatchLine(vec2 p, vec2 n) {
+  float halfW = max(HATCH_HALF_W, 0.5 / uHatchPitch);   // 最低でも約1ピクセル幅
+  return abs(fract(dot(p, n) / uHatchPitch) - 0.5) < halfW ? 1.0 : 0.0;
+}
+// 面の上の向き t（3D）の線を、画面上での向きに直した線の並び
+float hatchAlong(vec2 p, vec3 t) {
+  vec2 ts = vec2(dot(t, uViewRight), dot(t, uViewDown));
+  if (length(ts) < 1e-4) return 0.0;   // 面を真横から見ている
+  ts = normalize(ts);
+  return hatchLine(p, vec2(-ts.y, ts.x));
+}
+bool hatchInk(float tone) {
+  if (tone < 0.05) return true;
+  float l2 = tone < 0.7 ? 1.0 : 0.0, l3 = tone < 0.45 ? 1.0 : 0.0, l4 = tone < 0.2 ? 1.0 : 0.0;
+  float ink;
+  if (uDitherScreen > 0.5 || uForceScreen > 0.5) {
+    vec2 p = gl_FragCoord.xy;
+    ink = hatchLine(p, vec2(0.70710678, 0.70710678))
+        + l2 * hatchLine(p, vec2(0.70710678, -0.70710678))
+        + l3 * hatchLine(p, vec2(0.0, 1.0))
+        + l4 * hatchLine(p, vec2(1.0, 0.0));
+  } else {
+    // 面の点の画面上の位置（ピクセル）。正投影なので、画面の向きへの射影でそのまま求まる
+    vec2 p = vec2(dot(vPos, uViewRight), dot(vPos, uViewDown)) * uZoom;
+    vec3 n = abs(vNormal);
+    vec3 t1, t2;
+    if (isTop() || isBottom()) { t1 = vec3(1.0, 0.0, 0.0); t2 = vec3(0.0, 0.0, 1.0); }
+    else if (n.x >= n.z)       { t1 = vec3(0.0, 1.0, 0.0); t2 = vec3(0.0, 0.0, 1.0); }
+    else                       { t1 = vec3(0.0, 1.0, 0.0); t2 = vec3(1.0, 0.0, 0.0); }
+    ink = hatchAlong(p, t1)
+        + l2 * hatchAlong(p, t2)
+        + l3 * hatchAlong(p, t1 + t2)
+        + l4 * hatchAlong(p, t1 - t2);
+  }
+  return ink > 0.5;
+}
+
 vec4 grain(float tone) {
+  if (uDither > 2.5) return vec4(hatchInk(tone) ? uInk : uPaper, 1.0);
   float t;
   if (uDither < 0.5) {
     // RANDOM：マスごとの乱数（WORLD は3D座標に貼りつけるので、球でも継ぎ目が出ない）
@@ -528,13 +583,14 @@ function setCommonUniforms(sh, s, ctx) {
   for (const [k, v] of Object.entries(s.params)) {
     if (k !== 'uShadowBlur') sh.setUniform(k, v);
   }
-  // ディザリング（パネルの DITHER / DITHER_SCREEN / GRAIN_SIZE / DOT_PITCH）
-  const DITHERS = { RANDOM: 0, BAYER: 1, HALFTONE: 2 };
+  // ディザリング（パネルの DITHER / DITHER_SCREEN / GRAIN_SIZE / DOT_PITCH / HATCH_PITCH）
+  const DITHERS = { RANDOM: 0, BAYER: 1, HALFTONE: 2, HATCH: 3 };
   sh.setUniform('uDither', DITHERS[ctx.dither] ?? 0);
   sh.setUniform('uDitherScreen', ctx.ditherScreen ? 1 : 0);
   sh.setUniform('uForceScreen', 0);
   if (ctx.grainSize) sh.setUniform('uGrain', ctx.grainSize);
   sh.setUniform('uDotPitch', ctx.dotPitch || 12);
+  sh.setUniform('uHatchPitch', ctx.hatchPitch || 6);
   // 形とカメラの情報（POSTER が使う）
   if (ctx.step) sh.setUniform('uStep', ctx.step);
   if (ctx.H) sh.setUniform('uH', ctx.H);
