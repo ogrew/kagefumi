@@ -25,10 +25,12 @@ let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
 let strokeCheck, sStrokeWeight;
 let colorCPicker, ballASel, ballBSel;
+let bgSepCheck, bgPicker;   // 背景色を COLOR_A / B とは別に決める
 let mirrorXCheck, mirrorYCheck, sMirrorU, sMirrorV;   // POST：画面の中央で折り返す   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
+const BG_DEFAULT = '#eeeeee';        // BG_SEPARATE のときの背景色
 const COLOR_C_DEFAULT = '#ee2b2b';   // 3色のシェーディング（TRI）の3色目：上面
 // TRI のボールの色（光の当たる側, 影側）。A / B / C のどれか
 const BALL_A_DEFAULT = ['C', 'B'];
@@ -125,6 +127,12 @@ function setup() {
   colorCPicker = makeColor(panel, 'COLOR_C', COLOR_C_DEFAULT);
   ballASel = makeBallColors(panel, 'BALL_A', BALL_A_DEFAULT);   // ボールA：光の当たる側, 影側
   ballBSel = makeBallColors(panel, 'BALL_B', BALL_B_DEFAULT);
+  // 背景色：オフなら紙の色（COLOR_A、INVERT なら COLOR_B）。オンなら BG_COLOR を使う
+  bgSepCheck = makeCheck(panel, 'BG_SEPARATE', false);
+  bgPicker   = makeColor(panel, 'BG_COLOR', BG_DEFAULT);
+  const updateBgRow = () => bgPicker.row.style('display', bgSepCheck.checked() ? 'flex' : 'none');
+  bgSepCheck.changed(updateBgRow);
+  updateBgRow();
 
   // シェーディングに関係する項目だけを表示する
   const updateShadingRows = () => {
@@ -198,6 +206,9 @@ function setup() {
     ditherScreen.checked(false);
     strokeCheck.checked(false);
     colorCPicker.value(COLOR_C_DEFAULT);
+    bgPicker.value(BG_DEFAULT);
+    bgSepCheck.checked(false);
+    bgSepCheck.elt.querySelector('input').dispatchEvent(new Event('change', { bubbles: true }));
     ballASel.lit.selected(BALL_A_DEFAULT[0]); ballASel.dark.selected(BALL_A_DEFAULT[1]);
     ballBSel.lit.selected(BALL_B_DEFAULT[0]); ballBSel.dark.selected(BALL_B_DEFAULT[1]);
     ditherSel.elt.dispatchEvent(new Event('change'));
@@ -358,7 +369,9 @@ function draw() {
   const inverted = invertCheck.checked() && !tri;   // 3色のときは入れ替えない
   const paperRGB = inverted ? colB : colA;
   const inkRGB = inverted ? colA : colB;
-  background(paperRGB[0] * 255, paperRGB[1] * 255, paperRGB[2] * 255);
+  // 背景色（BG_SEPARATE がオンなら BG_COLOR、オフなら紙の色）
+  const bgRGB = bgSepCheck.checked() ? toRgb01(bgPicker) : paperRGB;
+  background(bgRGB[0] * 255, bgRGB[1] * 255, bgRGB[2] * 255);
 
   // 形状パラメータをまとめる
   const p = {
@@ -465,7 +478,7 @@ function draw() {
 
   // POST：画面の中央で折り返す
   applyMirror(mirrorXCheck.checked(), mirrorYCheck.checked(),
-              [sMirrorU.value(), sMirrorV.value()], paperRGB);
+              [sMirrorU.value(), sMirrorV.value()], bgRGB);
 }
 
 // 方位角 a・仰角 e のカメラの位置と上方向（ROLL 込み）
