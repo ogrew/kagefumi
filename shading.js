@@ -680,3 +680,38 @@ function midColor(s, ctx) {
   const paper = ctx.paper || s.params.uPaper || [1, 1, 1];
   return mixColor(ink, paper, ctx.stairShadowTone ?? 0.5, ctx.mixMode || 'OKLAB');
 }
+
+// ---------------------------------------------------------------------
+// ポストプロセス：描き終えた画面の中央で折り返す（パネルの MIRROR_X / MIRROR_Y）
+//   MIRROR_X：画面の左半分に元の画面を写し、右半分にその鏡像を写す
+//   MIRROR_Y：画面の上半分に元の画面を写し、下半分にその鏡像を写す
+// 折り返す線は常に画面の中央。MIRROR_U / MIRROR_V（0〜1）で、元の画面のどの位置を
+// その中央に持ってくるかを選ぶ（0.5 なら元の画面の中央。u は左が0、v は上が0）。
+// 元の画面の外側にはみ出した所は、背景色で塗る
+// ---------------------------------------------------------------------
+const MIRROR_FRAG = `
+precision highp float;
+varying vec2 vTexCoord;   // filter() では y = 0 が画面の上
+uniform sampler2D tex0;
+uniform vec2 uMirror;     // (左右, 上下)：1 で折り返す
+uniform vec2 uCenter;     // 画面の中央に持ってくる、元の画面の位置 (u, v)
+uniform vec3 uBg;         // はみ出した所の色
+void main() {
+  vec2 uv = vTexCoord;
+  if (uMirror.x > 0.5) uv.x = uCenter.x - abs(uv.x - 0.5);
+  if (uMirror.y > 0.5) uv.y = uCenter.y - abs(uv.y - 0.5);
+  bool outside = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
+  gl_FragColor = outside ? vec4(uBg, 1.0) : texture2D(tex0, uv);
+}
+`;
+let mirrorShader = null;
+
+// mx, my：折り返すか / center：[u, v] / bg：背景色 [r, g, b]（0〜1）
+function applyMirror(mx, my, center, bg) {
+  if (!mx && !my) return;
+  if (!mirrorShader) mirrorShader = createFilterShader(MIRROR_FRAG);
+  mirrorShader.setUniform('uMirror', [mx ? 1 : 0, my ? 1 : 0]);
+  mirrorShader.setUniform('uCenter', center);
+  mirrorShader.setUniform('uBg', bg);
+  filter(mirrorShader);
+}

@@ -24,7 +24,8 @@ let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
 let strokeCheck, sStrokeWeight;
-let colorCPicker, ballASel, ballBSel;   // 3色のシェーディング（TRI）用
+let colorCPicker, ballASel, ballBSel;
+let mirrorXCheck, mirrorYCheck, sMirrorU, sMirrorV;   // POST：画面の中央で折り返す   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel;
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
@@ -160,6 +161,21 @@ function setup() {
   lightSel.changed(updateLightRows);
   updateLightRows();
 
+  // 描き終えた画面に後からかける処理
+  makeSection(panel, 'POST');
+  mirrorXCheck = makeCheck(panel, 'MIRROR_X', false);              // 左半分を右へ折り返す
+  sMirrorU = makeSlider(panel, 'MIRROR_U', 0, 1, 0.5, 0.01);         // 画面中央に持ってくる元の画面の横位置（0＝左）
+  mirrorYCheck = makeCheck(panel, 'MIRROR_Y', false);              // 上半分を下へ折り返す
+  sMirrorV = makeSlider(panel, 'MIRROR_V', 0, 1, 0.5, 0.01);         // 同じく縦位置（0＝上）
+  // チェックが入っているときだけ、位置のスライダーを出す
+  const updateMirrorRows = () => {
+    sMirrorU.row.style('display', mirrorXCheck.checked() ? 'flex' : 'none');
+    sMirrorV.row.style('display', mirrorYCheck.checked() ? 'flex' : 'none');
+  };
+  mirrorXCheck.changed(updateMirrorRows);
+  mirrorYCheck.changed(updateMirrorRows);
+  updateMirrorRows();
+
   const btnRow = createDiv().parent(panel);
   btnRow.style('display', 'flex');
   btnRow.style('gap', '8px');
@@ -187,6 +203,9 @@ function setup() {
     ditherSel.elt.dispatchEvent(new Event('change'));
     flowSel.selected('ALTERNATE');
     orbitFlowSel.selected('SAME');
+    mirrorXCheck.checked(false);
+    mirrorYCheck.checked(false);
+    mirrorXCheck.elt.querySelector('input').dispatchEvent(new Event('change', { bubbles: true }));
   });
 
   // PAUSE：時間（階段・球・カメラ周回）を止める。スライダー操作は静止中も反映される
@@ -443,6 +462,10 @@ function draw() {
       camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
     }, a, e);
   }
+
+  // POST：画面の中央で折り返す
+  applyMirror(mirrorXCheck.checked(), mirrorYCheck.checked(),
+              [sMirrorU.value(), sMirrorV.value()], paperRGB);
 }
 
 // 方位角 a・仰角 e のカメラの位置と上方向（ROLL 込み）
