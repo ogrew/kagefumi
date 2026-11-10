@@ -17,6 +17,7 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
 let sBounce, sParticles, sParticleSize;
+let topBallsCheck, underBallsCheck;   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
@@ -70,12 +71,12 @@ function setup() {
   sD     = makeSlider(panel, 'D',         120,  480, 240);
   sH     = makeSlider(panel, 'H',           5,  200,  30);
   sVGap  = makeSlider(panel, 'V_GAP',       0,  400, 180);
-  animV  = makeAnim(panel, 'V_GAP', sVGap, 120, 180, 0.08, 240);
+  animV  = makeAnim(panel, 'V_GAP', sVGap, 120, 180, 0.14, 240);
 
   makeSection(panel, 'STAIRS');       // 段数と、向かい合う踊り場の間隔（＝階段の長さ）
   sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
   sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
-  animGap = makeAnim(panel, 'GAP', sGap, 80, 160, 0.05, 240);
+  animGap = makeAnim(panel, 'GAP', sGap, 80, 160, 0.21, 240);
   // 段の動き：段はボールの近くにだけあり、近づくと下端から縦に伸びて現れ、去ると縮んで消える
   stepSquashCheck = makeCheck(panel, 'STEP_SQUASH', false);
   sStepFade = makeSlider(panel, 'STEP_FADE', 0.3, 4, 1, 0.1);   // 段が現れる・消えるのにかかる長さ（段何個分か）
@@ -89,6 +90,8 @@ function setup() {
   sLB    = makeSlider(panel, 'L_B',       0.05, 0.8, 0.7, 0.01);
   sStopP = makeSlider(panel, 'STOP_PROB',   0,    1, 0.3, 0.01);
   sStopLen = makeSlider(panel, 'STOP_LEN',  0,  0.4, 0.2, 0.01);
+  topBallsCheck   = makeCheck(panel, 'TOP_BALLS', true);     // 表の世界（上面を下る）のボール
+  underBallsCheck = makeCheck(panel, 'UNDER_BALLS', true);   // 裏の世界（底面を上る）のボール
   sBounce  = makeSlider(panel, 'BOUNCE',    0,    2,   0, 0.1);   // 段を跳ねる高さ（段の高さの何倍か。0＝転がる）
   sParticles    = makeSlider(panel, 'PARTICLES', 0, 16, 0);            // 着地のたびに飛び散る粒の数（0＝なし）
   sParticleSize = makeSlider(panel, 'PARTICLE_SIZE', 0.05, 0.5, 0.25, 0.01);  // 粒の大きさ（ボールの半径に対する割合）
@@ -97,7 +100,7 @@ function setup() {
 
   makeSection(panel, 'CAMERA');
   sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
-  animElev = makeAnim(panel, 'ELEV', sElev, -40, 40, 0.03);   // 上から（表の世界）と下から（裏の世界）を往復する
+  animElev = makeAnim(panel, 'ELEV', sElev, -30, 30, 0.03);   // 上から（表の世界）と下から（裏の世界）を往復する
   sAzim  = makeSlider(panel, 'AZIM0',       0,  360,  45);
   sRoll  = makeSlider(panel, 'ROLL',      -90,   90,   0);
   sZoom  = makeSlider(panel, 'ZOOM',      0.3,   3,   1, 0.01);
@@ -109,13 +112,16 @@ function setup() {
   flowSel     = makeSelect(panel, 'FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'ALTERNATE'); // 各列の進む向き
   orbitFlowSel = makeSelect(panel, 'ORBIT_FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'SAME'); // 各列のカメラが周回する向き
   sAnimPhase = makeSlider(panel, 'ANIM_PHASE', 0, 360, 60);   // 形のアニメーションの、隣の列との位相のずれ（度）
+  // COLUMNS が 1 なら、列に関わる項目は使わないので隠す
+  sColumns.elt.addEventListener('input', updateColumnRows);
+  updateColumnRows();
 
   // ===== LOOK（シェーダー側：見た目） =====
   makeGroup(panel, 'LOOK');
 
   makeSection(panel, 'SHADING');      // 塗り方と影
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'FLAT');
-  strokeCheck = makeCheck(panel, 'STROKE', false);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
+  strokeCheck = makeCheck(panel, 'STROKE', true);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
   // GRAIN の白黒の置き換え方（ディザリング）
   ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE', 'HATCH'], 'RANDOM');
@@ -220,6 +226,7 @@ function setup() {
   btn.mousePressed(() => {
     for (const a of anims) setAnim(a, false);
     setTimeout(updateParticleRow, 0);
+    setTimeout(updateColumnRows, 0);
     stepSquashCheck.checked(false);
     updateStepRows();   // スライダーを初期値に戻したあとで表示を合わせる
     for (const o of sliders) {
@@ -232,7 +239,9 @@ function setup() {
     mixSel.selected('OKLAB');
     ditherSel.selected('RANDOM');
     ditherScreen.checked(false);
-    strokeCheck.checked(false);
+    strokeCheck.checked(true);
+    topBallsCheck.checked(true);
+    underBallsCheck.checked(true);
     colorCPicker.value(COLOR_C_DEFAULT);
     bgPicker.value(BG_DEFAULT);
     bgSepCheck.checked(false);
@@ -477,6 +486,7 @@ function draw() {
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     bounce: sBounce.value(),
+    topBalls: topBallsCheck.checked(), underBalls: underBallsCheck.checked(),
     stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
@@ -653,9 +663,10 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     const prob = sStopP.value();
     const ext = 1 + (stepMode ? ceil(SHADOW_EXTRA / PAIR_INTERVAL) : 0);
     const worlds = [];
-    // 表・裏とも常に描く（ELEV で出し分けると、真横付近でパチパチ切り替わって見えるため）
-    worlds.push({ under: false, center: S - U });   // 表のボールは q ≈ U + off の踊り場にいる
-    worlds.push({ under: true, center: -S - U });   // 裏のボールは踊り場 -q にいる
+    // 表・裏とも ELEV に関係なく描く（ELEV で出し分けると、真横付近でパチパチ切り替わって見えるため）。
+    // TOP_BALLS / UNDER_BALLS でオフにした世界は描かない（粒も出さず、STEP_SQUASH の段も反応しない）
+    if (base.topBalls) worlds.push({ under: false, center: S - U });    // 表のボールは q ≈ U + off の踊り場にいる
+    if (base.underBalls) worlds.push({ under: true, center: -S - U });  // 裏のボールは踊り場 -q にいる
     for (const w of worlds) {
       const jMin = ceil((w.center - lim) / PAIR_INTERVAL);
       const jMax = floor((w.center + lim) / PAIR_INTERVAL);
@@ -896,6 +907,12 @@ function updateParticles(st, p) {
     pt.age += dt;
   }
   st.particles = st.particles.filter(pt => pt.age < pt.life);
+}
+
+// COLUMNS が 1 なら、列の間隔・向き・位相のずれの項目を隠す
+function updateColumnRows() {
+  const multi = sColumns.value() > 1;
+  for (const el of [sColSpacing, flowSel, orbitFlowSel, sAnimPhase]) el.row.style('display', multi ? 'flex' : 'none');
 }
 
 // PARTICLES が 0 なら、粒の大きさのスライダーを隠す
