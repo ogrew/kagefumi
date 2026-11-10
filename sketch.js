@@ -27,7 +27,11 @@ let strokeCheck, sStrokeWeight;
 let colorCPicker, ballASel, ballBSel;
 let bgSepCheck, bgPicker;   // 背景色を COLOR_A / B とは別に決める
 let mirrorXCheck, mirrorYCheck, sMirrorU, sMirrorV;   // POST：画面の中央で折り返す   // 3色のシェーディング（TRI）用
-let sColumns, sColSpacing, flowSel, orbitFlowSel;
+let sColumns, sColSpacing, flowSel, orbitFlowSel, sAnimPhase;
+// 形のアニメーション（呼吸）：スライダーの値を、最小〜最大の間でサイン波で動かす
+const anims = [];        // makeAnim で作った { base, check, min, max, speed }
+let animV, animGap;      // V_GAP / GAP のアニメーション
+let animTime = 0;        // アニメーションの経過時間（秒）。PAUSE 中は止まる
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
 const BG_DEFAULT = '#eeeeee';        // BG_SEPARATE のときの背景色
@@ -60,10 +64,12 @@ function setup() {
   sD     = makeSlider(panel, 'D',         120,  480, 240);
   sH     = makeSlider(panel, 'H',           5,  200,  30);
   sVGap  = makeSlider(panel, 'V_GAP',       0,  400, 180);
+  animV  = makeAnim(panel, 'V_GAP', sVGap, 60, 300, 0.08);
 
   makeSection(panel, 'STAIRS');       // 段数と、向かい合う踊り場の間隔（＝階段の長さ）
   sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
   sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
+  animGap = makeAnim(panel, 'GAP', sGap, 60, 300, 0.05);
 
   makeSection(panel, 'BALL');         // ボールの大きさと動き
   sBallR = makeSlider(panel, 'BALL_R_RATIO', 0,   1, 0.75, 0.01);
@@ -85,6 +91,7 @@ function setup() {
   sColSpacing = makeSlider(panel, 'COL_SPACING', 200, 1500, 600, 10); // 列の中心どうしの間隔（ワールド単位）
   flowSel     = makeSelect(panel, 'FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'ALTERNATE'); // 各列の進む向き
   orbitFlowSel = makeSelect(panel, 'ORBIT_FLOW', ['SAME', 'ALTERNATE', 'OUTER_REVERSE'], 'SAME'); // 各列のカメラが周回する向き
+  sAnimPhase = makeSlider(panel, 'ANIM_PHASE', 0, 360, 60);   // 形のアニメーションの、隣の列との位相のずれ（度）
 
   // ===== LOOK（シェーダー側：見た目） =====
   makeGroup(panel, 'LOOK');
@@ -194,6 +201,7 @@ function setup() {
   const btn = createButton('RESET').parent(btnRow);
   styleButton(btn);
   btn.mousePressed(() => {
+    for (const a of anims) setAnim(a, false);
     for (const o of sliders) {
       o.s.value(o.val);
       o.v.html(o.val);
@@ -338,6 +346,57 @@ function makeSlider(parent, label, min, max, val, stp = 1) {
   return s;
 }
 
+// スライダー base の値をアニメーションさせる設定（チェックボックス＋最小・最大・速さ）。
+// チェックを入れると3本のスライダーが出て、base は操作できなくなる（値はアニメーションで決まる）
+//   label_MIN / label_MAX：動く範囲 / label_SPEED：1秒あたりの往復回数（Hz）
+function makeAnim(parent, label, base, minVal, maxVal, speed) {
+  const lo = base.elt.min, hi = base.elt.max;
+  const a = {
+    base,
+    check: makeCheck(parent, label + '_ANIM', false),
+    min: makeSlider(parent, label + '_MIN', +lo, +hi, minVal),
+    max: makeSlider(parent, label + '_MAX', +lo, +hi, maxVal),
+    speed: makeSlider(parent, label + '_SPEED', 0, 0.5, speed, 0.01),
+  };
+  a.check.changed(() => setAnim(a, a.check.checked()));
+  setAnim(a, false);
+  anims.push(a);
+  return a;
+}
+
+function setAnim(a, on) {
+  a.check.checked(on);
+  for (const s of [a.min, a.max, a.speed]) s.row.style('display', on ? 'flex' : 'none');
+  a.base.elt.disabled = on;
+  a.base.row.style('opacity', on ? '0.4' : '1');
+}
+
+// アニメーション中なら、列 c の今の値。最小〜最大をサイン波で往復し、列ごとに ANIM_PHASE ずつ位相がずれる
+function animValue(a, c) {
+  if (!a.check.checked()) return a.base.value();
+  const lo = a.min.value(), hi = a.max.value();
+  const phase = radians(sAnimPhase.value()) * c;
+  return lo + (hi - lo) * (0.5 + 0.5 * sin(TWO_PI * a.speed.value() * animTime + phase));
+}
+
+// 列 c の形状パラメータ
+function shapeFor(c) {
+  const p = {
+    W: sW.value(),
+    D: sD.value(),
+    steps: sSteps.value(),
+    H: sH.value(),
+    gap: animValue(animGap, c),
+  };
+  p.step = (p.H + animValue(animV, c)) / 2;   // 隣り合う踊り場の高低差
+  p.run = p.gap / p.steps;
+  p.rise = p.step / (p.steps + 1);
+  p.sw = p.D * STAIR_W_RATIO;
+  p.zc = p.D / 2 - p.sw / 2;                  // 階段の中心z（絶対値）
+  p.R = p.sw * sBallR.value() / 2;            // 球の半径（1.0で直径＝階段の幅）
+  return p;
+}
+
 // H キーでパネル全体を表示・非表示
 function keyPressed() {
   if (key === 'h' || key === 'H') {
@@ -373,27 +432,16 @@ function draw() {
   const bgRGB = bgSepCheck.checked() ? toRgb01(bgPicker) : paperRGB;
   background(bgRGB[0] * 255, bgRGB[1] * 255, bgRGB[2] * 255);
 
-  // 形状パラメータをまとめる
-  const p = {
-    W: sW.value(),
-    D: sD.value(),
-    steps: sSteps.value(),
-    H: sH.value(),
-    gap: sGap.value(),
-  };
-  p.step = (p.H + sVGap.value()) / 2;      // 隣り合う踊り場の高低差
-  p.run = p.gap / p.steps;
-  p.rise = p.step / (p.steps + 1);
-  p.sw = p.D * STAIR_W_RATIO;
-  p.zc = p.D / 2 - p.sw / 2;               // 階段の中心z（絶対値）
-  p.R = p.sw * sBallR.value() / 2;         // 球の半径（1.0で直径＝階段の幅）
+  if (!paused) animTime += deltaTime / 1000;
+
+  // 形状パラメータ（中央の列。列ごとの形は shapeFor(c) で作る）
+  const p = shapeFor(0);
 
   const e = radians(sElev.value());
   const zoom = sZoom.value();
   // ロールで画面が傾いても途切れないよう、画面の対角線の半分で判定する
   const halfView = sqrt(sq(width) + sq(height)) / 2 / zoom;
   const limitY = min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
-  const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
 
   if (!paused) orbit += sOrbit.value();
 
@@ -437,9 +485,12 @@ function draw() {
   // 各列は同じカメラで、投影範囲だけを横にずらして描く（列どうしの影は落とし合わない）
   const n = sColumns.value();
   const spacing = sColSpacing.value();
-  const near = CAM_DIST - sceneR, far = CAM_DIST + sceneR;
   for (let i = 0; i < n; i++) {
     const c = i - (n - 1) / 2;
+    // この列の形（V_GAP / GAP のアニメーションは、列ごとに位相をずらす）
+    const p = shapeFor(c);
+    const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
+    const near = CAM_DIST - sceneR, far = CAM_DIST + sceneR;
     const st = columnState(c);
     const dir = flowDir(c, flowSel.value());
     const du = paused ? 0 : dir * sSpeed.value() / p.step;
@@ -450,6 +501,9 @@ function draw() {
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
     const { eye, up } = cameraFor(a, e);
     const colBase = { ...base };
+    // 形に関わる値は列ごと（形のアニメーションで列ごとに違うため）
+    colBase.ballReach = p.R + 1.5 * p.step;
+    colBase.step = p.step;
     // 画面の右方向と下方向（階段ローカル座標）。HATCH の線の間隔を画面のピクセルで測るのに使う
     // （p5 の up ベクトルは画面の下向き）
     const fwd = p5.Vector.mult(eye, -1).normalize();
@@ -550,7 +604,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   const ctx = { ...base, balls, centerY: u * p.step };
 
   // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
-  const geo = stairGeometry(p);
+  const geo = stairGeometry(p, c, base.stroke);
   const k0 = kMin - (((kMin % 2) + 2) % 2);   // kMin以下の偶数
 
   // 影の下準備：光源から見た奥行きを描く
@@ -681,13 +735,17 @@ function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1) {
 
 // 踊り場0・1（とそれぞれの階段）を1つのジオメトリにまとめてキャッシュする
 // 形に関わるスライダーが変わったときだけ作り直す
-let stairGeo = null;
-let stairKey = '';
-function stairGeometry(p) {
-  const geoKey = [p.W, p.D, p.steps, p.H, p.gap, p.step].join(',');
-  if (geoKey !== stairKey) {
-    if (stairGeo) freeGeometry(stairGeo);
-    stairGeo = buildGeometry(() => {
+// 列ごとに持つ（形のアニメーションでは、列ごとに形が違うため）
+const stairGeos = new Map();   // 列番号 c → { key, geo }
+// withStroke：輪郭線を描くか。描かないなら線のデータを作らない（作り直しが軽くなる）
+function stairGeometry(p, c = 0, withStroke = true) {
+  const geoKey = [p.W, p.D, p.steps, p.H, p.gap, p.step, withStroke].join(',');
+  let entry = stairGeos.get(c);
+  if (!entry) { entry = { key: '', geo: null }; stairGeos.set(c, entry); }
+  if (geoKey !== entry.key) {
+    if (entry.geo) freeGeometry(entry.geo);
+    entry.geo = buildGeometry(() => {
+      if (!withStroke) noStroke();
       for (let k = 0; k <= 1; k++) {
         for (const b of boxesOf(k, p)) {
           push();
@@ -697,9 +755,9 @@ function stairGeometry(p) {
         }
       }
     });
-    stairKey = geoKey;
+    entry.key = geoKey;
   }
-  return stairGeo;
+  return entry.geo;
 }
 
 // 踊り場kと、そこから1つ上（反対側）へ向かう階段の箱リスト
