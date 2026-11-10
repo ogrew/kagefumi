@@ -12,7 +12,7 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
-let sBounce;
+let sBounce, sParticles, sParticleSize;
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
 let paused = false;
@@ -80,6 +80,10 @@ function setup() {
   sStopP = makeSlider(panel, 'STOP_PROB',   0,    1, 0.3, 0.01);
   sStopLen = makeSlider(panel, 'STOP_LEN',  0,  0.4, 0.2, 0.01);
   sBounce  = makeSlider(panel, 'BOUNCE',    0,    2,   0, 0.1);   // 段を跳ねる高さ（段の高さの何倍か。0＝転がる）
+  sParticles    = makeSlider(panel, 'PARTICLES', 0, 16, 0);            // 着地のたびに飛び散る粒の数（0＝なし）
+  sParticleSize = makeSlider(panel, 'PARTICLE_SIZE', 0.05, 0.5, 0.25, 0.01);  // 粒の大きさ（ボールの半径に対する割合）
+  sParticles.elt.addEventListener('input', updateParticleRow);
+  updateParticleRow();
 
   makeSection(panel, 'CAMERA');
   sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
@@ -204,6 +208,7 @@ function setup() {
   styleButton(btn);
   btn.mousePressed(() => {
     for (const a of anims) setAnim(a, false);
+    setTimeout(updateParticleRow, 0);   // スライダーを初期値に戻したあとで表示を合わせる
     for (const o of sliders) {
       o.s.value(o.val);
       o.v.html(o.val);
@@ -460,6 +465,7 @@ function draw() {
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     bounce: sBounce.value(),
+    particles: sParticles.value(), particleSize: sParticleSize.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
@@ -497,8 +503,12 @@ function draw() {
     const st = columnState(c);
     const dir = flowDir(c, flowSel.value());
     const du = paused ? 0 : dir * sSpeed.value() / p.step;
-    st.u = (((st.u + du) % 2) + 2) % 2;
+    const raw = st.u + du;
+    st.u = ((raw % 2) + 2) % 2;
     st.uTotal += du;
+    // u は2踊り場ごとに折り返すので、そのとき粒も同じだけずらす（見た目の位置は変わらない）
+    const wrap = st.u - raw;
+    if (wrap !== 0) for (const pt of st.particles) { pt.y += wrap * p.step; pt.floor += wrap * p.step; }
 
     // この列のカメラ：周回の向きを ORBIT_FLOW で列ごとに変える
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
@@ -554,7 +564,7 @@ function cameraFor(a, e) {
 // 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
 const columnStates = new Map();
 function columnState(c) {
-  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0 });
+  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [] });
   return columnStates.get(c);
 }
 
@@ -599,10 +609,20 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
       const off = j * PAIR_INTERVAL;
       const qA = stopWarp(u + off, st.uTotal + off, j, 0, prob, warpA, c);
       const qB = stopWarp(u + off - B_OFFSET, st.uTotal + off - B_OFFSET, j, 1, prob, warpB, c);
-      balls.push({ ...ballPos(qA, p, LA, base.bounce), r: p.R, ink: true });
-      balls.push({ ...ballPos(qB, p, LB, base.bounce), r: p.R, ink: false });
+      const bA = { ...ballPos(qA, p, LA, base.bounce), r: p.R, ink: true };
+      const bB = { ...ballPos(qB, p, LB, base.bounce), r: p.R, ink: false };
+      balls.push(bA, bB);
+      // 着地したら粒を出す（折り返しなしの位置で、前のフレームからの進みを見る）
+      if (base.particles > 0) {
+        const shift = st.uTotal - u;   // 折り返しありの位置 → なしの位置（2の倍数）
+        detectContact(st, j + 'A', qA + shift, LA, p, bA, base);
+        detectContact(st, j + 'B', qB + shift, LB, p, bB, base);
+      }
     }
   }
+  // 粒を動かし、ボールと一緒に描く（同じシェーディング・同じ色・影も落とす）
+  updateParticles(st, p);
+  for (const pt of st.particles) balls.push({ x: pt.x, y: pt.y, z: pt.z, r: pt.r * (1 - pt.age / pt.life), ink: pt.ink });
 
   const ctx = { ...base, balls, centerY: u * p.step };
 
@@ -658,6 +678,83 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight);
   }
   pop();
+}
+
+// ---------------------------------------------------------------------
+// 着地の粒
+// ---------------------------------------------------------------------
+// 位置 q のボールがどこに触れているか。n：踊り場の番号、s：-1＝踊り場の上、
+// 0〜steps＝階段の上（何番目の段の中央を過ぎたか。0 は最初の段の中央より手前）
+function contactStage(q, L, steps) {
+  const n = floor(q);
+  const f = q - n;
+  if (f < L) return { n, s: -1 };
+  const g = (f - L) / (1 - L) * steps;
+  return { n, s: min(floor(g + 0.5), steps) };
+}
+
+// 前のフレームからの進みで、ボールが段や踊り場に着地したかを調べ、着地したら粒を出す。
+// 跳ねの着地点（段の中央・踊り場の端）を越えた瞬間が着地。ただし踊り場から階段へ
+// 出ていく瞬間は離陸なので出さない（下りなら最初の端、上りなら最後の端）
+function detectContact(st, key, q, L, p, ball, base) {
+  const prev = st.prevQ.get(key);
+  st.prevQ.set(key, q);
+  if (prev === undefined || prev === q || abs(q - prev) > 0.5) return;
+  const a = contactStage(prev, L, p.steps), b = contactStage(q, L, p.steps);
+  let hit = false;
+  if (q > prev) {
+    // 下り：段の中央を越えた / 次の踊り場に着いた
+    if (b.n > a.n) hit = true;
+    else if (a.s >= 0 && b.s > a.s) hit = true;
+  } else {
+    // 上り：段の中央を越えた / 踊り場（階段の下端側）に着いた
+    if (b.n === a.n && a.s >= 0 && b.s >= 0 && b.s < a.s) hit = true;
+    else if (b.n === a.n && a.s >= 0 && b.s === -1) hit = true;
+  }
+  if (hit) spawnParticles(st, ball, p, base);
+}
+
+// ボールの足元から、粒を放射状に飛ばす
+function spawnParticles(st, ball, p, base) {
+  const R = p.R;
+  const floorY = ball.y + R;   // ボールが触れている面の高さ（y は下向き）
+  for (let i = 0; i < base.particles; i++) {
+    const ang = random(TWO_PI);
+    const sp = R * random(0.03, 0.09);
+    st.particles.push({
+      x: ball.x, y: floorY - R * 0.1, z: ball.z,
+      vx: cos(ang) * sp, vz: sin(ang) * sp, vy: -R * random(0.06, 0.14),
+      floor: floorY,
+      r: R * base.particleSize * random(0.6, 1.2),
+      ink: ball.ink,
+      age: 0, life: random(30, 55),
+    });
+  }
+  if (st.particles.length > 600) st.particles.splice(0, st.particles.length - 600);
+}
+
+// 粒を1フレームぶん動かす：重力で落ち、足元の面で小さく跳ね、小さくなって消える
+function updateParticles(st, p) {
+  if (paused) return;
+  const dt = min(deltaTime / (1000 / 60), 3);   // 60fps のときの1フレームを1とする
+  const gy = p.R * 0.012;
+  for (const pt of st.particles) {
+    pt.vy += gy * dt;
+    pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.z += pt.vz * dt;
+    const lim = pt.floor - pt.r;   // 粒の下端が面に触れる高さ
+    if (pt.y > lim) {
+      pt.y = lim;
+      pt.vy *= -0.3;
+      pt.vx *= 0.6; pt.vz *= 0.6;
+    }
+    pt.age += dt;
+  }
+  st.particles = st.particles.filter(pt => pt.age < pt.life);
+}
+
+// PARTICLES が 0 なら、粒の大きさのスライダーを隠す
+function updateParticleRow() {
+  if (sParticleSize) sParticleSize.row.style('display', sParticles.value() > 0 ? 'flex' : 'none');
 }
 
 // 停止の抽選：このサイクルで止まるなら、サイクル内の進みをワープさせる
