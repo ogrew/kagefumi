@@ -6,6 +6,7 @@ const PAIR_INTERVAL = 3;      // ツガイ同士の間隔（踊り場の数）
 const STOP_RAMP = 0.06;       // 停止前後の減速・加速にかける時間（サイクル比）
 const WARP_N = 400;           // 時間ワープ表の分割数
 const SHADOW_EXTRA = 8;       // 影の計算で画面の外に余分に描く踊り場の数（偶数）
+const STEP_SHADOW_EXTRA = 3;  // STEP_SQUASH の段の影で、画面の外に余分に描く踊り場の数
 const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の平面の高さ）
 // 太陽は無限遠の平行光として扱うので、効くのは向きだけ。
 // 高さを固定しているので、SUN_RADIUS が大きいほど太陽は低く（斜めから）、小さいほど真上に近くなる
@@ -13,6 +14,7 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
 let sBounce, sParticles, sParticleSize;
+let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
 let paused = false;
@@ -71,6 +73,11 @@ function setup() {
   sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
   sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
   animGap = makeAnim(panel, 'GAP', sGap, 60, 300, 0.05);
+  // 段の動き：段はボールの近くにだけあり、近づくと下端から縦に伸びて現れ、去ると縮んで消える
+  stepSquashCheck = makeCheck(panel, 'STEP_SQUASH', false);
+  sStepFade = makeSlider(panel, 'STEP_FADE', 0.3, 4, 1, 0.1);   // 段が現れる・消えるのにかかる長さ（段何個分か）
+  stepSquashCheck.changed(updateStepRows);
+  updateStepRows();
 
   makeSection(panel, 'BALL');         // ボールの大きさと動き
   sBallR = makeSlider(panel, 'BALL_R_RATIO', 0,   1, 0.75, 0.01);
@@ -208,7 +215,9 @@ function setup() {
   styleButton(btn);
   btn.mousePressed(() => {
     for (const a of anims) setAnim(a, false);
-    setTimeout(updateParticleRow, 0);   // スライダーを初期値に戻したあとで表示を合わせる
+    setTimeout(updateParticleRow, 0);
+    stepSquashCheck.checked(false);
+    updateStepRows();   // スライダーを初期値に戻したあとで表示を合わせる
     for (const o of sliders) {
       o.s.value(o.val);
       o.v.html(o.val);
@@ -465,6 +474,7 @@ function draw() {
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     bounce: sBounce.value(),
+    stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
@@ -597,7 +607,9 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   // ツガイ（A：インク色、B：白＝Aの上）を PAIR_INTERVAL 踊り場ごとに配置
   // 階段にボールの影を落とすため、先に位置だけ計算しておく。半径0なら置かない
   const balls = [];
-  if (p.R > 0) {
+  const pathBalls = [];   // 段の動き（STEP_SQUASH）用：画面の少し外まで含めたボールの道の上の位置
+  const stepMode = base.stepSquash;
+  if (p.R > 0 || stepMode) {
     const span = PAIR_INTERVAL * p.step;
     const jMin = ceil(-limitY / span);
     const jMax = floor(limitY / span);
@@ -605,10 +617,13 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     const warpA = buildWarp(LA, sStopLen.value());
     const warpB = buildWarp(LB, sStopLen.value());
     const prob = sStopP.value();
-    for (let j = jMin; j <= jMax; j++) {
+    const ext = stepMode ? 1 + ceil(SHADOW_EXTRA / PAIR_INTERVAL) : 0;
+    for (let j = jMin - ext; j <= jMax + ext; j++) {
       const off = j * PAIR_INTERVAL;
       const qA = stopWarp(u + off, st.uTotal + off, j, 0, prob, warpA, c);
       const qB = stopWarp(u + off - B_OFFSET, st.uTotal + off - B_OFFSET, j, 1, prob, warpB, c);
+      if (stepMode) pathBalls.push({ q: qA, L: LA }, { q: qB, L: LB });
+      if (j < jMin || j > jMax || p.R <= 0) continue;
       const bA = { ...ballPos(qA, p, LA, base.bounce), r: p.R, ink: true };
       const bB = { ...ballPos(qB, p, LB, base.bounce), r: p.R, ink: false };
       balls.push(bA, bB);
@@ -627,7 +642,14 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   const ctx = { ...base, balls, centerY: u * p.step };
 
   // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
-  const geo = stairGeometry(p, c, base.stroke);
+  const geo = stairGeometry(p, c, base.stroke, stepMode);
+  // 段の動き：各段の位置・大きさ・角度。影の下準備と本番で同じ段を2回使うので、1フレームに1回だけ計算する
+  const stepCache = new Map();
+  const stepAt = (k, i) => {
+    const key = k * 64 + i;
+    if (!stepCache.has(key)) stepCache.set(key, stepTransform(k, i, p, pathBalls, base.stepFade));
+    return stepCache.get(key);
+  };
   const k0 = kMin - (((kMin % 2) + 2) % 2);   // kMin以下の偶数
 
   // 影の下準備：光源から見た奥行きを描く
@@ -647,6 +669,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
         dsh.setUniform('uOffset', [0, k * p.step, 0]);
         model(geo);
       }
+      // 動く段は1つずつ描くので重い。画面外の段の影は近い分（STEP_SHADOW_EXTRA）だけにする
+      if (stepMode) drawMovingSteps(dsh, k0 - STEP_SHADOW_EXTRA, kMax + STEP_SHADOW_EXTRA + 1, p, stepAt, true);
     },
     (dsh) => {   // ボール
       for (const b of balls) {
@@ -668,6 +692,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     model(geo);
     pop();
   }
+  if (stepMode) drawMovingSteps(sh, k0, kMax + 1, p, stepAt, false);
   endShading(ctx);
 
   // ボール：シェーディングにボール用の塗りがあればそれで、なければ通常描画
@@ -678,6 +703,73 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight);
   }
   pop();
+}
+
+// ---------------------------------------------------------------------
+// 段の動き（STEP_SQUASH）
+// ---------------------------------------------------------------------
+// 段とボールの距離（段何個分か）。踊り場の上の移動も含めて、ボールの進み q で測る。
+// 踊り場kの i 段目（1 が踊り場kのすぐ上）は、踊り場k-1 → k へ下りるサイクルの階段部分にある。
+// 1段ぶんの進みは (1 - L) / steps なので、踊り場の折り返し（長さ L）は L / (1 - L) × steps 段ぶんになる
+function stepDistance(k, i, steps, ball) {
+  const L = ball.L;
+  const qBox = (k - 1) + L + (1 - L) * (1 - (i - 0.5) / steps);
+  return abs(ball.q - qBox) / ((1 - L) / steps);
+}
+
+// 行き過ぎて戻る動き（0 → 1。途中で 1 を少し超える）
+function easeOutBack(x) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * pow(x - 1, 3) + c1 * pow(x - 1, 2);
+}
+
+// ボールがどれだけ近いか x（0＝遠い、1＝近い。直線的）。
+// ボールから1段以内は常に 1（乗っている段と隣の段）、その外の STEP_FADE 段ぶんで変わる
+function stepPresence(k, i, p, pathBalls, fade) {
+  let m = Infinity;
+  for (const b of pathBalls) m = min(m, stepDistance(k, i, p.steps, b));
+  return constrain((1 + fade - m) / fade, 0, 1);
+}
+
+// 段1つの今の位置と大きさ。描かない（高さ0）なら null
+// ボールが近づくと下端から縦に一気に伸びて現れ（少し伸びすぎて戻る）、去ると縮んで消える
+function stepTransform(k, i, p, pathBalls, fade) {
+  const b = boxesOf(k, p)[i];
+  const x = stepPresence(k, i, p, pathBalls, fade);
+  const e = x <= 0 ? 0 : easeOutBack(x);
+  if (e <= 0.001) return null;
+  const bottom = b.top + b.h;   // 下端（y が大きい側）を残す
+  return { cx: b.x, cy: bottom - b.h * e / 2, cz: b.z, sx: b.w, sy: b.h * e, sz: b.d };
+}
+
+// 段を1つずつ描く。depth：影の下準備（光源から見た奥行き）なら true
+// 大きさは uObjMat でシェーダーにも渡し、ディザや影の位置を箱と合わせる
+function drawMovingSteps(sh, kFrom, kTo, p, stepAt, depth) {
+  sh.setUniform('uUseObjMat', 1);
+  for (let k = kFrom; k <= kTo; k++) {
+    for (let i = 1; i <= p.steps; i++) {
+      const t = stepAt(k, i);
+      if (!t) continue;
+      // 列優先の3×3：拡大縮小
+      sh.setUniform('uObjMat', [t.sx, 0, 0, 0, t.sy, 0, 0, 0, t.sz]);
+      sh.setUniform('uOffset', [t.cx, t.cy, t.cz]);
+      if (depth) {
+        box(1);
+      } else {
+        push();
+        translate(t.cx, t.cy, t.cz);
+        scale(t.sx, t.sy, t.sz);
+        box(1);
+        pop();
+      }
+    }
+  }
+  sh.setUniform('uUseObjMat', 0);
+}
+
+// STEP_SQUASH がオンのときだけ STEP_FADE を出す
+function updateStepRows() {
+  sStepFade.row.style('display', stepSquashCheck.checked() ? 'flex' : 'none');
 }
 
 // ---------------------------------------------------------------------
@@ -838,8 +930,9 @@ function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1) {
 // 列ごとに持つ（形のアニメーションでは、列ごとに形が違うため）
 const stairGeos = new Map();   // 列番号 c → { key, geo }
 // withStroke：輪郭線を描くか。描かないなら線のデータを作らない（作り直しが軽くなる）
-function stairGeometry(p, c = 0, withStroke = true) {
-  const geoKey = [p.W, p.D, p.steps, p.H, p.gap, p.step, withStroke].join(',');
+// landingsOnly：踊り場だけを作る（段を1つずつ動かす STEP_SQUASH のとき）
+function stairGeometry(p, c = 0, withStroke = true, landingsOnly = false) {
+  const geoKey = [p.W, p.D, p.steps, p.H, p.gap, p.step, withStroke, landingsOnly].join(',');
   let entry = stairGeos.get(c);
   if (!entry) { entry = { key: '', geo: null }; stairGeos.set(c, entry); }
   if (geoKey !== entry.key) {
@@ -847,7 +940,8 @@ function stairGeometry(p, c = 0, withStroke = true) {
     entry.geo = buildGeometry(() => {
       if (!withStroke) noStroke();
       for (let k = 0; k <= 1; k++) {
-        for (const b of boxesOf(k, p)) {
+        const list = boxesOf(k, p);
+        for (const b of (landingsOnly ? list.slice(0, 1) : list)) {
           push();
           translate(b.x, b.top + b.h / 2, b.z);
           box(b.w, b.h, b.d);

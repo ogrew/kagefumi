@@ -47,17 +47,23 @@ uniform mat4 uModelViewMatrix;
 uniform mat4 uProjectionMatrix;
 uniform vec3 uOffset;      // 階段：踊り場kぶんのずれ / ボール：中心
 uniform float uObjScale;   // 階段：1 / ボール：半径（sphere() は半径1の形を拡大して描くため）
+// 1つずつ伸び縮みする段（STEP_SQUASH）用：箱の拡大縮小。uUseObjMat = 1 のときだけ使う
+//   vPos = uObjMat × aPosition + uOffset（軸に沿った拡大縮小なので、法線の向きは変わらない）
+uniform float uUseObjMat;
+uniform mat3 uObjMat;
 varying vec3 vNormal;
 varying vec3 vPos;
 varying float vVert;
 
 void main() {
   // buildGeometry() は箱の拡大縮小を法線に反映するだけで、長さを1に戻さない
-  vNormal = normalize(aNormal);
-  vPos = aPosition * uObjScale + uOffset;
+  vec3 n0 = normalize(aNormal);
+  bool objMat = uUseObjMat > 0.5;
+  vNormal = n0;
+  vPos = objMat ? uObjMat * aPosition + uOffset : aPosition * uObjScale + uOffset;
   // box() の側面は、面によって縦方向がuかvかが違う
   // （-x面と+z面はv、+x面と-z面はu。どちらも0が上端）
-  bool useV = vNormal.x < -0.5 || vNormal.z > 0.5;
+  bool useV = n0.x < -0.5 || n0.z > 0.5;
   vVert = useV ? aTexCoord.y : aTexCoord.x;
   gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
 }
@@ -70,8 +76,11 @@ attribute vec3 aPosition;
 uniform mat4 uLightVP;
 uniform vec3 uOffset;
 uniform float uObjScale;
+uniform float uUseObjMat;   // 1 なら uObjMat で拡大縮小（STEP_SQUASH の段）
+uniform mat3 uObjMat;
 void main() {
-  gl_Position = uLightVP * vec4(aPosition * uObjScale + uOffset, 1.0);
+  vec3 p = uUseObjMat > 0.5 ? uObjMat * aPosition : aPosition * uObjScale;
+  gl_Position = uLightVP * vec4(p + uOffset, 1.0);
 }
 `;
 const DEPTH_FRAG = `
@@ -577,6 +586,7 @@ function renderDepth(which, lm, draw, frag, format) {
   shader(dsh);
   noStroke();
   dsh.setUniform('uLightVP', lm.m);
+  dsh.setUniform('uUseObjMat', 0);
   draw(dsh);
   resetShader();
   fb.end();
@@ -605,6 +615,7 @@ function setCommonUniforms(sh, s, ctx) {
   if (ctx.ink) sh.setUniform('uInk', ctx.ink);
   if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
   sh.setUniform('uMid', midColor(s, ctx));
+  sh.setUniform('uUseObjMat', 0);   // STEP_SQUASH の段を描くときだけ 1 にする
   // シェーディング固有の値（sketch.js が ctx.uniforms に入れて渡す。TRI の色など）
   if (ctx.uniforms) for (const [k, v] of Object.entries(ctx.uniforms)) sh.setUniform(k, v);
 
