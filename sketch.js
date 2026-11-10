@@ -12,6 +12,7 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
+let sBounce;
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
 let paused = false;
@@ -78,6 +79,7 @@ function setup() {
   sLB    = makeSlider(panel, 'L_B',       0.05, 0.8, 0.7, 0.01);
   sStopP = makeSlider(panel, 'STOP_PROB',   0,    1, 0.3, 0.01);
   sStopLen = makeSlider(panel, 'STOP_LEN',  0,  0.4, 0.2, 0.01);
+  sBounce  = makeSlider(panel, 'BOUNCE',    0,    2,   0, 0.1);   // 段を跳ねる高さ（段の高さの何倍か。0＝転がる）
 
   makeSection(panel, 'CAMERA');
   sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
@@ -457,6 +459,7 @@ function draw() {
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(), hatchPitch: sHatchPitch.value(),
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
+    bounce: sBounce.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
@@ -596,8 +599,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
       const off = j * PAIR_INTERVAL;
       const qA = stopWarp(u + off, st.uTotal + off, j, 0, prob, warpA, c);
       const qB = stopWarp(u + off - B_OFFSET, st.uTotal + off - B_OFFSET, j, 1, prob, warpB, c);
-      balls.push({ ...ballPos(qA, p, LA), r: p.R, ink: true });
-      balls.push({ ...ballPos(qB, p, LB), r: p.R, ink: false });
+      balls.push({ ...ballPos(qA, p, LA, base.bounce), r: p.R, ink: true });
+      balls.push({ ...ballPos(qB, p, LB, base.bounce), r: p.R, ink: false });
     }
   }
 
@@ -778,11 +781,11 @@ function boxesOf(k, p) {
 
 // 球の位置（階段ローカル座標）
 // u が1進むごとに、踊り場n → 階段 → 踊り場n+1 を1サイクル進む（＝下る）
-function ballPos(q, p, L) {
+// bounce：段を跳ねて下りるときの跳ねの高さ（段の高さ rise の何倍か）。0 なら転がる
+function ballPos(q, p, L, bounce = 0) {
   const n = floor(q);
   const f = q - n;
   const s = sideOf(n);
-  const R = p.R;
   let x, z;
 
   if (f < L) {
@@ -790,15 +793,37 @@ function ballPos(q, p, L) {
     const t = f / L;
     x = s * (p.gap / 2 + (p.W / 2) * sin(PI * t));
     z = s * p.zc * cos(PI * t);
-  } else {
-    // 踊り場nから踊り場n+1へ階段を進む
-    const t = (f - L) / (1 - L);
-    x = s * (p.gap / 2 - p.gap * t);
-    z = -s * p.zc;
+    return { x, y: contactY(x, z, n, p), z };
   }
 
-  // 今のサイクルに関わる箱（踊り場n・n+1と、その前後の階段）だけを対象に、
-  // 上面に接する高さのうち一番高いものを採用（めり込み防止）
+  // 踊り場nから踊り場n+1へ階段を進む
+  const t = (f - L) / (1 - L);
+  x = s * (p.gap / 2 - p.gap * t);
+  z = -s * p.zc;
+  let y = contactY(x, z, n, p);   // 転がる場合：段の角を乗り越えながら進む
+
+  if (bounce > 0 && p.steps > 0) {
+    // 跳ねる場合：着地点（踊り場nの端 → 各段の中央 → 踊り場n+1の端）の間を放物線で跳ぶ。
+    // 横の速さは一定のままなので、高さが時間の2次式になり、投げた物と同じ軌跡になる
+    const g = t * p.steps;                 // 階段の上での位置（段の数で数える。0〜steps）
+    let a, b;                              // 今の跳びの始点・終点（同じ単位）
+    if (g < 0.5) { a = 0; b = 0.5; }
+    else if (g > p.steps - 0.5) { a = p.steps - 0.5; b = p.steps; }
+    else { a = floor(g - 0.5) + 0.5; b = a + 1; }
+    const xAt = v => s * (p.gap / 2 - p.run * v);
+    const ya = contactY(xAt(a), z, n, p), yb = contactY(xAt(b), z, n, p);
+    const k = (g - a) / (b - a);           // 跳びの進み具合（0〜1）
+    const h = bounce * p.rise * (b - a);   // 跳ぶ高さ（半分の長さの跳びは半分の高さ）
+    // y は下向きなので、上へ跳ぶのは y を減らす方向。床や段の角より下には行かない
+    y = min(y, lerp(ya, yb, k) - 4 * h * k * (1 - k));
+  }
+  return { x, y, z };
+}
+
+// 位置 (x, z) にあるボールが、踊り場n・n+1まわりの箱の上面に接する高さ。
+// 接する高さのうち一番高いものを採用する（めり込み防止）
+function contactY(x, z, n, p) {
+  const R = p.R;
   const near = boxesOf(n, p).concat(boxesOf(n + 1, p));
   let y = Infinity;
   for (const b of near) {
@@ -810,8 +835,7 @@ function ballPos(q, p, L) {
     }
   }
   if (y === Infinity) y = n * p.step - p.H / 2 - R;
-
-  return { x, y, z };
+  return y;
 }
 
 function windowResized() {
