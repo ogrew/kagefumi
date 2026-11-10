@@ -120,6 +120,14 @@ float hash3(vec3 p) {
   p += dot(p, p.yzx + 19.19);
   return fract((p.x + p.y) * p.z);
 }
+// 画面のピクセル座標（整数）用の乱数（Dave Hoskins の hash12）。
+// hash3 に整数を入れると、最初の掛け算の小数部分が座標に比例して規則的に回り、
+// 約10ピクセルごとの格子が残る。こちらは整数座標でもくせが出にくい
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
 bool isTop()    { return vNormal.y < -0.5; }
 bool isBottom() { return vNormal.y >  0.5; }
 bool isSide()   { return abs(vNormal.y) < 0.5; }
@@ -249,8 +257,8 @@ vec4 grain(float tone) {
   if (uDither < 0.5) {
     // RANDOM：マスごとの乱数（WORLD は3D座標に貼りつけるので、球でも継ぎ目が出ない）
     bool screen = uDitherScreen > 0.5;
-    t = hash3(screen ? vec3(floor(gl_FragCoord.xy / uGrain), 0.0)
-                     : floor(vPos * uZoom / uGrain));
+    t = screen ? hash12(floor(gl_FragCoord.xy / uGrain))
+               : hash3(floor(vPos * uZoom / uGrain));
   } else if (uDither < 1.5) {
     // BAYER：8×8 の規則的なしきい値
     t = bayer8(ditherCoord(uGrain)) + 0.5 / 64.0;
