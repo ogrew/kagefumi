@@ -7,6 +7,9 @@ const STOP_RAMP = 0.06;       // 停止前後の減速・加速にかける時�
 const WARP_N = 400;           // 時間ワープ表の分割数
 const SHADOW_EXTRA = 8;       // 影の計算で画面の外に余分に描く踊り場の数（偶数）
 const STEP_SHADOW_EXTRA = 3;  // STEP_SQUASH の段の影で、画面の外に余分に描く踊り場の数
+// 逆さの世界：ボールは表・裏とも常に描く。画面は、ELEV がこの角度（度）より上なら表の世界の
+// ボールに、下なら裏の世界のボールについていき、その間はなめらかに移る
+const BOTH_WORLDS_DEG = 10;
 const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の平面の高さ）
 // 太陽は無限遠の平行光として扱うので、効くのは向きだけ。
 // 高さを固定しているので、SUN_RADIUS が大きいほど太陽は低く（斜めから）、小さいほど真上に近くなる
@@ -33,7 +36,7 @@ let mirrorXCheck, mirrorYCheck, sMirrorU, sMirrorV;   // POST：画面の中央�
 let sColumns, sColSpacing, flowSel, orbitFlowSel, sAnimPhase;
 // 形のアニメーション（呼吸）：スライダーの値を、最小〜最大の間でサイン波で動かす
 const anims = [];        // makeAnim で作った { base, check, min, max, speed }
-let animV, animGap;      // V_GAP / GAP のアニメーション
+let animV, animGap, animElev;   // V_GAP / GAP / ELEV のアニメーション
 let animTime = 0;        // アニメーションの経過時間（秒）。PAUSE 中は止まる
 const COLOR_A_DEFAULT = '#ffffff';   // 紙（背景・光の当たる面）
 const COLOR_B_DEFAULT = '#000000';   // インク（影・暗い面）
@@ -67,12 +70,12 @@ function setup() {
   sD     = makeSlider(panel, 'D',         120,  480, 240);
   sH     = makeSlider(panel, 'H',           5,  200,  30);
   sVGap  = makeSlider(panel, 'V_GAP',       0,  400, 180);
-  animV  = makeAnim(panel, 'V_GAP', sVGap, 60, 300, 0.08);
+  animV  = makeAnim(panel, 'V_GAP', sVGap, 120, 180, 0.08, 240);
 
   makeSection(panel, 'STAIRS');       // 段数と、向かい合う踊り場の間隔（＝階段の長さ）
   sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
   sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
-  animGap = makeAnim(panel, 'GAP', sGap, 60, 300, 0.05);
+  animGap = makeAnim(panel, 'GAP', sGap, 80, 160, 0.05, 240);
   // 段の動き：段はボールの近くにだけあり、近づくと下端から縦に伸びて現れ、去ると縮んで消える
   stepSquashCheck = makeCheck(panel, 'STEP_SQUASH', false);
   sStepFade = makeSlider(panel, 'STEP_FADE', 0.3, 4, 1, 0.1);   // 段が現れる・消えるのにかかる長さ（段何個分か）
@@ -94,6 +97,7 @@ function setup() {
 
   makeSection(panel, 'CAMERA');
   sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
+  animElev = makeAnim(panel, 'ELEV', sElev, -40, 40, 0.03);   // 上から（表の世界）と下から（裏の世界）を往復する
   sAzim  = makeSlider(panel, 'AZIM0',       0,  360,  45);
   sRoll  = makeSlider(panel, 'ROLL',      -90,   90,   0);
   sZoom  = makeSlider(panel, 'ZOOM',      0.3,   3,   1, 0.01);
@@ -365,13 +369,14 @@ function makeSlider(parent, label, min, max, val, stp = 1) {
 // スライダー base の値をアニメーションさせる設定（チェックボックス＋最小・最大・速さ）。
 // チェックを入れると3本のスライダーが出て、base は操作できなくなる（値はアニメーションで決まる）
 //   label_MIN / label_MAX：動く範囲 / label_SPEED：1秒あたりの往復回数（Hz）
-function makeAnim(parent, label, base, minVal, maxVal, speed) {
+//   maxHi：label_MAX のスライダーの上限（省略すると base と同じ）
+function makeAnim(parent, label, base, minVal, maxVal, speed, maxHi) {
   const lo = base.elt.min, hi = base.elt.max;
   const a = {
     base,
     check: makeCheck(parent, label + '_ANIM', false),
     min: makeSlider(parent, label + '_MIN', +lo, +hi, minVal),
-    max: makeSlider(parent, label + '_MAX', +lo, +hi, maxVal),
+    max: makeSlider(parent, label + '_MAX', +lo, maxHi ?? +hi, maxVal),
     speed: makeSlider(parent, label + '_SPEED', 0, 0.5, speed, 0.01),
   };
   a.check.changed(() => setAnim(a, a.check.checked()));
@@ -453,11 +458,9 @@ function draw() {
   // 形状パラメータ（中央の列。列ごとの形は shapeFor(c) で作る）
   const p = shapeFor(0);
 
-  const e = radians(sElev.value());
   const zoom = sZoom.value();
   // ロールで画面が傾いても途切れないよう、画面の対角線の半分で判定する
   const halfView = sqrt(sq(width) + sq(height)) / 2 / zoom;
-  const limitY = min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
 
   if (!paused) orbit += sOrbit.value();
 
@@ -508,17 +511,20 @@ function draw() {
     const c = i - (n - 1) / 2;
     // この列の形（V_GAP / GAP のアニメーションは、列ごとに位相をずらす）
     const p = shapeFor(c);
+    // この列の仰角（ELEV のアニメーションも、列ごとに位相をずらす）
+    const eDeg = animValue(animElev, c);
+    const e = radians(eDeg);
+    const limitY = min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
     const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
     const near = CAM_DIST - sceneR, far = CAM_DIST + sceneR;
     const st = columnState(c);
     const dir = flowDir(c, flowSel.value());
     const du = paused ? 0 : dir * sSpeed.value() / p.step;
-    const raw = st.u + du;
-    st.u = ((raw % 2) + 2) % 2;
     st.uTotal += du;
-    // u は2踊り場ごとに折り返すので、そのとき粒も同じだけずらす（見た目の位置は変わらない）
-    const wrap = st.u - raw;
-    if (wrap !== 0) for (const pt of st.particles) { pt.y += wrap * p.step; pt.floor += wrap * p.step; }
+    // 画面の追いかけ方：表だけ見えるときは表のボールに（du と同じ向き）、裏だけ見えるときは
+    // 裏のボールに（逆向き）ついていく。その間はなめらかに移り、真横では階段が止まる。
+    // 位置ではなく毎フレームの進みとして足し込むので、ELEV を変えても画面は飛ばない
+    st.S = (st.S ?? st.uTotal) + du * (1 - 2 * underWeight(eDeg));
 
     // この列のカメラ：周回の向きを ORBIT_FLOW で列ごとに変える
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
@@ -527,6 +533,9 @@ function draw() {
     // 形に関わる値は列ごと（形のアニメーションで列ごとに違うため）
     colBase.ballReach = p.R + 1.5 * p.step;
     colBase.step = p.step;
+    colBase.eDeg = eDeg;
+    // LIGHT=FIXED で下から見ているときは、太陽を上下反転させる（裏の世界の太陽）
+    if (base.lightDir && eDeg < 0) colBase.lightDir = [base.lightDir[0], -base.lightDir[1], base.lightDir[2]];
     // 画面の右方向と下方向（階段ローカル座標）。HATCH の線の間隔を画面のピクセルで測るのに使う
     // （p5 の up ベクトルは画面の下向き）
     const fwd = p5.Vector.mult(eye, -1).normalize();
@@ -539,8 +548,9 @@ function draw() {
     if (lightSel.value() !== 'FIXED') {
       // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
       // （p5 の up ベクトルは画面の下向きなので、画面の上は -up）
+      // 下から見ているとき（裏の世界）は、裏の世界の「上」（世界の下向き）へ傾ける
       const toCam = eye.copy().normalize();
-      const lu = radians(sLightUp.value());
+      const lu = radians(sLightUp.value()) * (eDeg < 0 ? -1 : 1);
       const L = p5.Vector.mult(toCam, cos(lu)).sub(p5.Vector.mult(up, sin(lu)));
       colBase.lightDir = [L.x, L.y, L.z];
     }
@@ -556,6 +566,12 @@ function draw() {
   // POST：画面の中央で折り返す
   applyMirror(mirrorXCheck.checked(), mirrorYCheck.checked(),
               [sMirrorU.value(), sMirrorV.value()], bgRGB);
+}
+
+// 画面がどれだけ裏の世界についていくか（0：表、1：裏）。ELEV が ±BOTH_WORLDS_DEG の間でなめらかに変わる
+function underWeight(eDeg) {
+  const t = constrain((BOTH_WORLDS_DEG - eDeg) / (2 * BOTH_WORLDS_DEG), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 // 方位角 a・仰角 e のカメラの位置と上方向（ROLL 込み）
@@ -595,43 +611,72 @@ function flowDir(c, mode) {
 // 1列ぶんを描く：ボールの位置 → 影の下準備 → 階段 → ボール
 // setView()：この列の投影範囲とカメラを設定する関数
 function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
-  const u = st.u;
   fill(255);
   stroke(0);
   strokeWeight(1);
 
-  // 以下、座標はすべて「階段ローカル」（踊り場kの中心y = k*step）で計算し、
-  // 最後に -u*step だけずらして描く
-  const kMin = ceil(u - limitY / p.step);
-  const kMax = floor(u + limitY / p.step);
-  // ツガイ（A：インク色、B：白＝Aの上）を PAIR_INTERVAL 踊り場ごとに配置
+  // ---- 2つの世界と、画面の追いかけ方 ----
+  // 表の世界：ボールは踊り場の上面を下る（踊り場の番号が増える向き）。
+  // 裏の世界：ボールは踊り場の底面を、重力が逆向きのまま上る（番号が減る向き）。
+  // どちらも同じ進み U（折り返しなし）で動き、向きだけが逆。
+  // 画面は、表だけ見えるときは表のボールに、裏だけ見えるときは裏のボールについていく
+  // （階段が流れ、ボールはほぼ止まって見える）。その間はなめらかに移り、真横では階段が止まる
+  const U = st.uTotal;
+  const S = st.S;                                 // 画面の中心にくる踊り場の番号（折り返しなし）
+  // 以下、座標はすべて「階段ローカル」（踊り場kの中心y = k*step）。
+  // 数が大きくなりすぎないよう、折り返しなしの番号から F（偶数）を引いた番号で扱う。
+  // 形は2踊り場ごとに繰り返すので、F をずらしても見た目は変わらない
+  const F = 2 * floor(S / 2);
+  const s = S - F;                                // 画面の中心（ローカル）。最後に -s*step だけずらして描く
+  if (st.F !== undefined && st.F !== F) {
+    // 基準がずれたら、ローカル座標で持っている粒も同じだけずらす
+    const d = (F - st.F) * p.step;
+    for (const pt of st.particles) { pt.y -= d; pt.floor -= d; }
+  }
+  st.F = F;
+  const yShift = -F * p.step;                     // 折り返しなしの座標 → ローカル座標
+
+  const lim = limitY / p.step;
+  const kMin = ceil(s - lim);
+  const kMax = floor(s + lim);
+  // ツガイ（A・B）を PAIR_INTERVAL 踊り場ごとに配置。
+  //   表：A＝インク色（先を行く）、B＝紙の色（1つ上で追う）
+  //   裏：同じ進みで、色だけ入れ替える（黒が白を追う）
   // 階段にボールの影を落とすため、先に位置だけ計算しておく。半径0なら置かない
   const balls = [];
-  const pathBalls = [];   // 段の動き（STEP_SQUASH）用：画面の少し外まで含めたボールの道の上の位置
+  const pathBalls = [];   // 段の動き（STEP_SQUASH）用：画面の少し外まで含めたボールの位置
   const stepMode = base.stepSquash;
   if (p.R > 0 || stepMode) {
-    const span = PAIR_INTERVAL * p.step;
-    const jMin = ceil(-limitY / span);
-    const jMax = floor(limitY / span);
     const LA = sLA.value(), LB = sLB.value();
     const warpA = buildWarp(LA, sStopLen.value());
     const warpB = buildWarp(LB, sStopLen.value());
     const prob = sStopP.value();
-    const ext = stepMode ? 1 + ceil(SHADOW_EXTRA / PAIR_INTERVAL) : 0;
-    for (let j = jMin - ext; j <= jMax + ext; j++) {
-      const off = j * PAIR_INTERVAL;
-      const qA = stopWarp(u + off, st.uTotal + off, j, 0, prob, warpA, c);
-      const qB = stopWarp(u + off - B_OFFSET, st.uTotal + off - B_OFFSET, j, 1, prob, warpB, c);
-      if (stepMode) pathBalls.push({ q: qA, L: LA }, { q: qB, L: LB });
-      if (j < jMin || j > jMax || p.R <= 0) continue;
-      const bA = { ...ballPos(qA, p, LA, base.bounce), r: p.R, ink: true };
-      const bB = { ...ballPos(qB, p, LB, base.bounce), r: p.R, ink: false };
-      balls.push(bA, bB);
-      // 着地したら粒を出す（折り返しなしの位置で、前のフレームからの進みを見る）
-      if (base.particles > 0) {
-        const shift = st.uTotal - u;   // 折り返しありの位置 → なしの位置（2の倍数）
-        detectContact(st, j + 'A', qA + shift, LA, p, bA, base);
-        detectContact(st, j + 'B', qB + shift, LB, p, bB, base);
+    const ext = 1 + (stepMode ? ceil(SHADOW_EXTRA / PAIR_INTERVAL) : 0);
+    const worlds = [];
+    // 表・裏とも常に描く（ELEV で出し分けると、真横付近でパチパチ切り替わって見えるため）
+    worlds.push({ under: false, center: S - U });   // 表のボールは q ≈ U + off の踊り場にいる
+    worlds.push({ under: true, center: -S - U });   // 裏のボールは踊り場 -q にいる
+    for (const w of worlds) {
+      const jMin = ceil((w.center - lim) / PAIR_INTERVAL);
+      const jMax = floor((w.center + lim) / PAIR_INTERVAL);
+      for (let j = jMin - ext; j <= jMax + ext; j++) {
+        const off = j * PAIR_INTERVAL;
+        const id = w.under ? 2 : 0;   // 止まる抽選は世界ごとに変える
+        const qA = stopWarp(U + off, U + off, j, id, prob, warpA, c);
+        const qB = stopWarp(U + off - B_OFFSET, U + off - B_OFFSET, j, id + 1, prob, warpB, c);
+        if (stepMode) pathBalls.push({ q: qA, L: LA, under: w.under }, { q: qB, L: LB, under: w.under });
+        if (j < jMin - 1 || j > jMax + 1 || p.R <= 0) continue;
+        const pos = w.under ? ballPosUnder : ballPos;
+        const bA = { ...pos(qA, p, LA, base.bounce), r: p.R, ink: !w.under, under: w.under };
+        const bB = { ...pos(qB, p, LB, base.bounce), r: p.R, ink: w.under, under: w.under };
+        bA.y += yShift; bB.y += yShift;
+        balls.push(bA, bB);
+        // 着地したら粒を出す（前のフレームからの進みを見る）
+        if (base.particles > 0) {
+          const tag = w.under ? 'u' : 't';
+          detectContact(st, tag + j + 'A', qA, LA, p, bA, base);
+          detectContact(st, tag + j + 'B', qB, LB, p, bB, base);
+        }
       }
     }
   }
@@ -639,7 +684,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   updateParticles(st, p);
   for (const pt of st.particles) balls.push({ x: pt.x, y: pt.y, z: pt.z, r: pt.r * (1 - pt.age / pt.life), ink: pt.ink });
 
-  const ctx = { ...base, balls, centerY: u * p.step };
+  const ctx = { ...base, balls, centerY: s * p.step };
 
   // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
   const geo = stairGeometry(p, c, base.stroke, stepMode);
@@ -647,7 +692,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   const stepCache = new Map();
   const stepAt = (k, i) => {
     const key = k * 64 + i;
-    if (!stepCache.has(key)) stepCache.set(key, stepTransform(k, i, p, pathBalls, base.stepFade));
+    if (!stepCache.has(key)) stepCache.set(key, stepTransform(k, i, p, pathBalls, base.stepFade, F));
     return stepCache.get(key);
   };
   const k0 = kMin - (((kMin % 2) + 2) % 2);   // kMin以下の偶数
@@ -655,7 +700,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   // 影の下準備：光源から見た奥行きを描く
   // 画面外（光源側）にある踊り場も影を落とすので、上下に SHADOW_EXTRA 踊り場ぶん余分に描く
   const xr = p.gap / 2 + p.W;
-  const yc = u * p.step;
+  const yc = s * p.step;
   const bounds = {
     x: [-xr, xr],
     y: [yc - limitY - p.step, yc + limitY + p.step],
@@ -683,7 +728,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
 
   setView();
   push();
-  translate(0, -u * p.step, 0);
+  translate(0, -s * p.step, 0);
   const sh = beginShading(shading, ctx);
   for (let k = k0; k <= kMax; k += 2) {
     sh.setUniform('uOffset', [0, k * p.step, 0]);
@@ -711,9 +756,14 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
 // 段とボールの距離（段何個分か）。踊り場の上の移動も含めて、ボールの進み q で測る。
 // 踊り場kの i 段目（1 が踊り場kのすぐ上）は、踊り場k-1 → k へ下りるサイクルの階段部分にある。
 // 1段ぶんの進みは (1 - L) / steps なので、踊り場の折り返し（長さ L）は L / (1 - L) × steps 段ぶんになる
+// 裏の世界のボールは、踊り場kの底面で折り返したあと、踊り場kの i 段目の下を i = 1 から順に通って
+// 踊り場k-1 へ上る（ボールの進み q の踊り場は -k）
+// k は折り返しなしの踊り場番号
 function stepDistance(k, i, steps, ball) {
   const L = ball.L;
-  const qBox = (k - 1) + L + (1 - L) * (1 - (i - 0.5) / steps);
+  const qBox = ball.under
+    ? -k + L + (1 - L) * ((i - 0.5) / steps)
+    : (k - 1) + L + (1 - L) * (1 - (i - 0.5) / steps);
   return abs(ball.q - qBox) / ((1 - L) / steps);
 }
 
@@ -727,15 +777,16 @@ function easeOutBack(x) {
 // ボールから1段以内は常に 1（乗っている段と隣の段）、その外の STEP_FADE 段ぶんで変わる
 function stepPresence(k, i, p, pathBalls, fade) {
   let m = Infinity;
-  for (const b of pathBalls) m = min(m, stepDistance(k, i, p.steps, b));
+  for (const b of pathBalls) m = min(m, stepDistance(k, i, p.steps, b));   // k は折り返しなし
   return constrain((1 + fade - m) / fade, 0, 1);
 }
 
 // 段1つの今の位置と大きさ。描かない（高さ0）なら null
 // ボールが近づくと下端から縦に一気に伸びて現れ（少し伸びすぎて戻る）、去ると縮んで消える
-function stepTransform(k, i, p, pathBalls, fade) {
+// k：ローカルの踊り場番号、F：ローカル → 折り返しなしの番号へのずれ
+function stepTransform(k, i, p, pathBalls, fade, F = 0) {
   const b = boxesOf(k, p)[i];
-  const x = stepPresence(k, i, p, pathBalls, fade);
+  const x = stepPresence(k + F, i, p, pathBalls, fade);
   const e = x <= 0 ? 0 : easeOutBack(x);
   if (e <= 0.001) return null;
   const bottom = b.top + b.h;   // 下端（y が大きい側）を残す
@@ -807,16 +858,18 @@ function detectContact(st, key, q, L, p, ball, base) {
 }
 
 // ボールの足元から、粒を放射状に飛ばす
+// 裏の世界のボールの粒は、重力が逆向き（上へ落ちる）
 function spawnParticles(st, ball, p, base) {
   const R = p.R;
-  const floorY = ball.y + R;   // ボールが触れている面の高さ（y は下向き）
+  const g = ball.under ? -1 : 1;     // 重力の向き（y は下向きなので、表は +1）
+  const floorY = ball.y + g * R;     // ボールが触れている面の高さ
   for (let i = 0; i < base.particles; i++) {
     const ang = random(TWO_PI);
     const sp = R * random(0.03, 0.09);
     st.particles.push({
-      x: ball.x, y: floorY - R * 0.1, z: ball.z,
-      vx: cos(ang) * sp, vz: sin(ang) * sp, vy: -R * random(0.06, 0.14),
-      floor: floorY,
+      x: ball.x, y: floorY - g * R * 0.1, z: ball.z,
+      vx: cos(ang) * sp, vz: sin(ang) * sp, vy: -g * R * random(0.06, 0.14),
+      floor: floorY, g,
       r: R * base.particleSize * random(0.6, 1.2),
       ink: ball.ink,
       age: 0, life: random(30, 55),
@@ -831,10 +884,11 @@ function updateParticles(st, p) {
   const dt = min(deltaTime / (1000 / 60), 3);   // 60fps のときの1フレームを1とする
   const gy = p.R * 0.012;
   for (const pt of st.particles) {
-    pt.vy += gy * dt;
+    const g = pt.g || 1;
+    pt.vy += g * gy * dt;
     pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.z += pt.vz * dt;
-    const lim = pt.floor - pt.r;   // 粒の下端が面に触れる高さ
-    if (pt.y > lim) {
+    const lim = pt.floor - g * pt.r;   // 粒の端が面に触れる高さ
+    if ((pt.y - lim) * g > 0) {
       pt.y = lim;
       pt.vy *= -0.3;
       pt.vx *= 0.6; pt.vz *= 0.6;
@@ -1009,6 +1063,78 @@ function ballPos(q, p, L, bounce = 0) {
     y = min(y, lerp(ya, yb, k) - 4 * h * k * (1 - k));
   }
   return { x, y, z };
+}
+
+// 裏の世界のボールの位置（折り返しなしの踊り場番号での座標）。重力が逆向きで、底面を転がる。
+// 進み q の整数部 m に対して、踊り場 n = -m の底面でU字に折り返し、
+// 踊り場nの段の下（i = 1, 2, ...）を通って踊り場 n-1 の底面へ上る。q が増えるほど上へ進む
+function ballPosUnder(q, p, L, bounce = 0) {
+  const m = floor(q);
+  const f = q - m;
+  const n = -m;
+  const s = sideOf(n);
+  let x, z;
+
+  if (f < L) {
+    // 踊り場nの底面でU字に折り返す（下から来た階段の列 → 上へ向かう階段の列）
+    const t = f / L;
+    x = s * (p.gap / 2 + (p.W / 2) * sin(PI * t));
+    z = -s * p.zc * cos(PI * t);
+    return { x, y: contactYUnder(x, z, n, p), z };
+  }
+
+  // 踊り場nの段の下を、踊り場 n-1 へ向かって進む
+  const t = (f - L) / (1 - L);
+  x = s * (p.gap / 2 - p.gap * t);
+  z = s * p.zc;
+  const xAtG = v => s * (p.gap / 2 - p.run * v);   // 階段の上での位置（段の数で数える）→ x
+  // 裏の道には、ボールの半径より大きい段差がある（角を転がるだけでは越えられない）：
+  //   踊り場の底面 → 最初の段の下：踊り場の厚さ H ぶん（ボールにとって）落ちる
+  //   最後の段の下 → 次の踊り場の底面：H が段の高さの2倍より大きいと、その差だけ上る
+  // そこで、前後の各位置から放物線を引き、一番ボールにとって高いもの（y が一番大きいもの）を採る。
+  // 後ろから引いた線は縁から落ちる軌跡、前から引いた線は段差へ跳び上がる軌跡になる
+  const g = t * p.steps;
+  const fall = 4 * p.rise;   // 放物線の曲がり具合（段1つぶん進む間に 4 × rise）
+  let y = contactYUnder(x, z, n, p);
+  for (let d = 0.1; d <= 2.5; d += 0.1) {
+    const gb = max(g - d, 0), gf = min(g + d, p.steps);
+    y = max(y, contactYUnder(xAtG(gb), z, n, p) - fall * sq(g - gb));
+    y = max(y, contactYUnder(xAtG(gf), z, n, p) - fall * sq(gf - g));
+  }
+
+  if (bounce > 0 && p.steps > 0) {
+    // 表と同じく着地点の間を放物線で跳ぶ。跳ぶ向きは下（y が増える向き）
+    let a, b;
+    if (g < 0.5) { a = 0; b = 0.5; }
+    else if (g > p.steps - 0.5) { a = p.steps - 0.5; b = p.steps; }
+    else { a = floor(g - 0.5) + 0.5; b = a + 1; }
+    const ya = contactYUnder(xAtG(a), z, n, p), yb = contactYUnder(xAtG(b), z, n, p);
+    const k = (g - a) / (b - a);
+    const h = bounce * p.rise * (b - a);
+    y = max(y, lerp(ya, yb, k) + 4 * h * k * (1 - k));
+  }
+  return { x, y, z };
+}
+
+// 裏の世界：位置 (x, z) のボールが、踊り場nまわりの箱の底面に下から接する高さ。
+// 接する高さのうち一番低いもの（y が一番大きいもの）を採用する（めり込み防止）。
+// 対象は、このサイクルで触れうる箱だけ：踊り場n と n-1、踊り場nの段（これから下を通る）、
+// 踊り場n+1 の段（下から上ってきた階段）。踊り場n+1 は同じ側の2つ下にあり、対象にすると
+// 階段の終わりで真下の踊り場に引き寄せられてしまう
+function contactYUnder(x, z, n, p) {
+  const R = p.R;
+  const near = [boxesOf(n - 1, p)[0]].concat(boxesOf(n, p), boxesOf(n + 1, p).slice(1));
+  let y = -Infinity;
+  for (const b of near) {
+    const dx = max(b.x - b.w / 2 - x, 0, x - (b.x + b.w / 2));
+    const dz = max(b.z - b.d / 2 - z, 0, z - (b.z + b.d / 2));
+    const d2 = dx * dx + dz * dz;
+    if (d2 < R * R) {
+      y = max(y, b.top + b.h + sqrt(R * R - d2));
+    }
+  }
+  if (y === -Infinity) y = n * p.step + p.H / 2 + R;
+  return y;
 }
 
 // 位置 (x, z) にあるボールが、踊り場n・n+1まわりの箱の上面に接する高さ。
