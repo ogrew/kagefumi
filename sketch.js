@@ -1,4 +1,5 @@
-const CAM_DIST = 3000;
+const CAM_DIST = 3000;           // ORTHO のカメラの距離（正投影なので見え方には効かない）
+const MAX_LIMIT_Y_PERSP = 6000;  // PERSPECTIVE で描く範囲の上限（消失点へ向かう階段をどこまで描くか）
 const MAX_LIMIT_Y = 3000;
 const STAIR_W_RATIO = 0.3;    // 階段の幅 = D × この値（最大0.5）
 const B_OFFSET = 1.0;         // ボールBの位置（ボールAから何踊り場ぶん上か）
@@ -19,6 +20,7 @@ const sliders = [];           // RESET用：スライダーとデフォルト値
 let sBounce, sParticles, sParticleSize;
 let topBallsCheck, underBallsCheck;   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
+let projSel, sFov;   // 投影：ORTHO（正投影）/ PERSPECTIVE（透視投影）
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
 let paused = false;
@@ -103,7 +105,14 @@ function setup() {
   animElev = makeAnim(panel, 'ELEV', sElev, -30, 30, 0.03);   // 上から（表の世界）と下から（裏の世界）を往復する
   sAzim  = makeSlider(panel, 'AZIM0',       0,  360,  45);
   sRoll  = makeSlider(panel, 'ROLL',      -90,   90,   0);
+  // 投影：ORTHO は遠近感なし、PERSPECTIVE は遠近感あり。どちらも大きさは ZOOM で決まる。
+  // PERSPECTIVE のカメラの距離は、注視点での大きさが ZOOM と同じになるよう FOV から決める
+  // （FOV を広げると、大きさはそのままで遠近感だけが強くなる）
+  projSel  = makeSelect(panel, 'PROJECTION', ['ORTHO', 'PERSPECTIVE'], 'ORTHO');
   sZoom  = makeSlider(panel, 'ZOOM',      0.3,   3,   1, 0.01);
+  sFov     = makeSlider(panel, 'FOV',       10,  100,  40);        // PERSPECTIVE：縦の画角（度）。広いほど遠近感が強い
+  projSel.changed(updateProjRows);
+  updateProjRows();
   sOrbit = makeSlider(panel, 'ORBIT_SPEED', 0,    1, 0.2, 0.01);
 
   makeSection(panel, 'LAYOUT');       // 階段を画面の横一列に何本並べるか
@@ -227,6 +236,8 @@ function setup() {
     for (const a of anims) setAnim(a, false);
     setTimeout(updateParticleRow, 0);
     setTimeout(updateColumnRows, 0);
+    projSel.selected('ORTHO');
+    updateProjRows();
     stepSquashCheck.checked(false);
     updateStepRows();   // スライダーを初期値に戻したあとで表示を合わせる
     for (const o of sliders) {
@@ -467,7 +478,11 @@ function draw() {
   // 形状パラメータ（中央の列。列ごとの形は shapeFor(c) で作る）
   const p = shapeFor(0);
 
+  // 投影。zoom は「注視点の深さで、1ワールド単位が何ピクセルか」（ディザや HATCH の大きさに使う）
+  const persp = projSel.value() === 'PERSPECTIVE';
+  const fov = radians(sFov.value());
   const zoom = sZoom.value();
+  const camDist = persp ? (height / 2) / (zoom * tan(fov / 2)) : CAM_DIST;
   // ロールで画面が傾いても途切れないよう、画面の対角線の半分で判定する
   const halfView = sqrt(sq(width) + sq(height)) / 2 / zoom;
 
@@ -524,9 +539,10 @@ function draw() {
     // この列の仰角（ELEV のアニメーションも、列ごとに位相をずらす）
     const eDeg = animValue(animElev, c);
     const e = radians(eDeg);
-    const limitY = min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
+    const limitY = persp ? perspLimitY(e, fov, camDist) + p.D : min(halfView / abs(cos(e)) + p.D, MAX_LIMIT_Y);
     const sceneR = sqrt(sq(limitY + p.H) + sq(p.gap / 2 + p.W) + sq(p.D / 2));
-    const near = CAM_DIST - sceneR, far = CAM_DIST + sceneR;
+    // 透視投影では、カメラより手前に来る部分は描かない（near を 0 より大きく保つ）
+    const near = max(camDist - sceneR, persp ? 10 : -Infinity), far = camDist + sceneR;
     const st = columnState(c);
     const dir = flowDir(c, flowSel.value());
     const du = paused ? 0 : dir * sSpeed.value() / p.step;
@@ -538,7 +554,7 @@ function draw() {
 
     // この列のカメラ：周回の向きを ORBIT_FLOW で列ごとに変える
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));
-    const { eye, up } = cameraFor(a, e);
+    const { eye, up } = cameraFor(a, e, camDist);
     const colBase = { ...base };
     // 形に関わる値は列ごと（形のアニメーションで列ごとに違うため）
     colBase.ballReach = p.R + 1.5 * p.step;
@@ -568,7 +584,13 @@ function draw() {
     drawColumn(p, st, c, colBase, shading, limitY, () => {
       // この列の位置へ投影範囲をずらす（影の下準備のあとに設定し直す）
       const dx = c * spacing;
-      ortho(-hw - dx, hw - dx, -hh, hh, near, far);
+      if (persp) {
+        // 視錐台を横にずらす（注視点の深さで dx ずれるよう、near の面での量に直す）
+        const th = near * tan(fov / 2), tw = th * width / height, sx = dx * near / camDist;
+        frustum(-tw - sx, tw - sx, -th, th, near, far);
+      } else {
+        ortho(-hw - dx, hw - dx, -hh, hh, near, far);
+      }
       camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
     }, a, e);
   }
@@ -585,9 +607,9 @@ function underWeight(eDeg) {
 }
 
 // 方位角 a・仰角 e のカメラの位置と上方向（ROLL 込み）
-function cameraFor(a, e) {
-  const r = CAM_DIST * cos(e);
-  const eye = createVector(r * sin(a), -CAM_DIST * sin(e), r * cos(a));
+function cameraFor(a, e, dist = CAM_DIST) {
+  const r = dist * cos(e);
+  const eye = createVector(r * sin(a), -dist * sin(e), r * cos(a));
   // ロール：視線方向を軸に、カメラの上方向ベクトルを回す
   const fwd = p5.Vector.mult(eye, -1).normalize();
   const right = p5.Vector.cross(fwd, createVector(0, 1, 0)).normalize();
@@ -595,6 +617,24 @@ function cameraFor(a, e) {
   const roll = radians(sRoll.value());
   const up = p5.Vector.mult(up0, cos(roll)).add(p5.Vector.mult(right, sin(roll)));
   return { eye, up };
+}
+
+// PERSPECTIVE で描く範囲（注視点から上下にどこまでか）。
+// 縦の軸の上の点は、注視点から Y 離れると、深さが Y・sin(e) だけ変わり、画面の縦位置は Y・cos(e) / 深さ。
+// これが画面の端（tan(fov/2)、ROLL があれば対角線ぶん広げる）に届く Y を、遠ざかる側と近づく側で求める。
+// 遠ざかる側は消失点が画面の中にあると果てしなく続くので、MAX_LIMIT_Y_PERSP で打ち切る
+function perspLimitY(e, fov, dist) {
+  const diag = sRoll.value() !== 0 ? sqrt(sq(width) + sq(height)) / height : 1;
+  const t = tan(fov / 2) * diag * 1.1;
+  const ce = abs(cos(e)), se = abs(sin(e));
+  const away = ce - t * se > 0.02 ? t * dist / (ce - t * se) : Infinity;
+  const toward = t * dist / (ce + t * se);
+  return min(max(away, toward), MAX_LIMIT_Y_PERSP);
+}
+
+// PERSPECTIVE のときだけ FOV を出す
+function updateProjRows() {
+  sFov.row.style('display', projSel.value() === 'PERSPECTIVE' ? 'flex' : 'none');
 }
 
 // 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
