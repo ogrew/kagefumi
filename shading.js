@@ -43,6 +43,7 @@ precision highp float;
 attribute vec3 aPosition;
 attribute vec3 aNormal;
 attribute vec2 aTexCoord;
+attribute vec4 aVertexColor;   // 足跡：置いた時刻（まとまりの時間幅の中での割合）を赤に入れてある
 uniform mat4 uModelViewMatrix;
 uniform mat4 uProjectionMatrix;
 uniform vec3 uOffset;      // 階段：踊り場kぶんのずれ / ボール：中心
@@ -51,11 +52,15 @@ uniform float uObjScale;   // 階段：1 / ボール：半径（sphere() は半�
 //   vPos = uObjMat × aPosition + uOffset（軸に沿った拡大縮小なので、法線の向きは変わらない）
 uniform float uUseObjMat;
 uniform mat3 uObjMat;
+// 1 なら、画面上の位置も vPos から求める（足跡用。1つずつ p5 の変換を使わずに描けて軽い）
+uniform float uObjDirect;
 varying vec3 vNormal;
 varying vec3 vPos;
 varying float vVert;
+varying float vBorn;
 
 void main() {
+  vBorn = aVertexColor.r;
   // buildGeometry() は箱の拡大縮小を法線に反映するだけで、長さを1に戻さない
   vec3 n0 = normalize(aNormal);
   bool objMat = uUseObjMat > 0.5;
@@ -65,7 +70,7 @@ void main() {
   // （-x面と+z面はv、+x面と-z面はu。どちらも0が上端）
   bool useV = n0.x < -0.5 || n0.z > 0.5;
   vVert = useV ? aTexCoord.y : aTexCoord.x;
-  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aPosition, 1.0);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(uObjDirect > 0.5 ? vPos : aPosition, 1.0);
 }
 `;
 
@@ -616,6 +621,7 @@ function setCommonUniforms(sh, s, ctx) {
   if (ctx.paper) sh.setUniform('uPaper', ctx.paper);
   sh.setUniform('uMid', midColor(s, ctx));
   sh.setUniform('uUseObjMat', 0);   // STEP_SQUASH の段を描くときだけ 1 にする
+  sh.setUniform('uObjDirect', 0);
   // シェーディング固有の値（sketch.js が ctx.uniforms に入れて渡す。TRI の色など）
   if (ctx.uniforms) for (const [k, v] of Object.entries(ctx.uniforms)) sh.setUniform(k, v);
 
@@ -658,6 +664,74 @@ function endShading(ctx) {
   resetShader();
   stroke(inkColor255(ctx));
   strokeWeight(1);
+}
+
+// 足跡を描く：面の少し上に置いた薄い円盤を、インクの色で塗る。
+// 時間がたつと、規則的な点のパターン（Bayer）で間引かれ、粒になって消えていく（中間の色は出さない）
+// 跡ごとの年齢 = 今の時刻 - （まとまりの始まり + 割合 × 時間幅）。1つずつ描く跡は時間幅 0
+const FOOT_FRAG = `
+varying float vBorn;
+uniform float uClock;   // 今の時刻（秒）
+uniform float uT0;      // まとまりの最初の跡を置いた時刻
+uniform float uSpan;    // まとまりの時間幅
+uniform float uLife;    // TRAIL_LIFE
+void main() {
+  float age = uClock - (uT0 + vBorn * uSpan);
+  float f = clamp(1.0 - age / uLife, 0.0, 1.0);
+  float fade = f * f * (3.0 - 2.0 * f);   // 消え始めはゆっくり、最後は速く
+  float t = bayer8(gl_FragCoord.xy / max(uGrain, 1.0)) + 0.5 / 64.0;
+  if (t > fade) discard;
+  gl_FragColor = vec4(uInk, 1.0);
+}
+`;
+const FOOT_H = 0.6;     // 円盤の厚さ
+const FOOT_LIFT = 0.3;  // 面から浮かせる量（面と重なってちらつかないように）
+
+// 跡の円盤の中心の高さ：表の世界は面の上（y が小さい側）、裏の世界は面の下
+function footCenterY(mk) {
+  return mk.y + (mk.under ? 1 : -1) * (FOOT_H / 2 + FOOT_LIFT);
+}
+
+
+// st：列の状態（まとめた跡 st.markChunks と、まとめる前の跡 st.marks）
+// show：{ top, under } 表・裏の跡を描くか（カメラから見えない側の面の跡は描かない）
+// step：踊り場の高低差（まとめたあとに基準 F がずれた分を戻すのに使う）
+function drawFootprints(name, ctx, st, life, show, step) {
+  const s = resolveShading(name);
+  const sh = getShader('footprint', SHADE_VERT, FRAG_HEAD + FOOT_FRAG);
+  shader(sh);
+  setCommonUniforms(sh, s, ctx);
+  noStroke();
+  sh.setUniform('uClock', st.markClock);
+  sh.setUniform('uLife', life);
+  // まとめた跡：1まとまりを1回で描く
+  sh.setUniform('uObjScale', 1.0);
+  for (const ch of st.markChunks || []) {
+    if (ch.under ? !show.under : !show.top) continue;
+    const dy = (ch.F - st.F) * step;
+    sh.setUniform('uT0', ch.t0);
+    sh.setUniform('uSpan', ch.span);
+    sh.setUniform('uOffset', [0, dy, 0]);
+    push();
+    translate(0, dy, 0);
+    model(ch.geo);
+    pop();
+  }
+  // まとめる前の跡：1つずつ（位置は uObjMat と uOffset だけで決める）
+  sh.setUniform('uUseObjMat', 1);
+  sh.setUniform('uObjDirect', 1);
+  sh.setUniform('uSpan', 0);
+  let lastR = -1;
+  for (const mk of st.marks) {
+    if (mk.under ? !show.under : !show.top) continue;
+    sh.setUniform('uT0', mk.born);
+    if (mk.r !== lastR) { sh.setUniform('uObjMat', [mk.r, 0, 0, 0, FOOT_H, 0, 0, 0, mk.r]); lastR = mk.r; }
+    sh.setUniform('uOffset', [mk.x, footCenterY(mk), mk.z]);
+    cylinder(1, 1, 16, 1);
+  }
+  sh.setUniform('uUseObjMat', 0);
+  sh.setUniform('uObjDirect', 0);
+  resetShader();
 }
 
 // ボールをシェーダーで描く。このシェーディングにボール用の塗りがなければ false を返す

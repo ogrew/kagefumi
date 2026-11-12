@@ -18,7 +18,8 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
 
 let sBounce, sParticles, sParticleSize;
-let topBallsCheck, underBallsCheck;   // 表の世界・裏の世界のボールを描くか
+let topBallsCheck, underBallsCheck;
+let footCheck, sTrailLife, sTrailSize;   // 足跡（FOOTPRINTS）   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let projSel, sFov;   // 投影：ORTHO（正投影）/ PERSPECTIVE（透視投影）
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
@@ -99,6 +100,12 @@ function setup() {
   sParticleSize = makeSlider(panel, 'PARTICLE_SIZE', 0.05, 0.5, 0.25, 0.01);  // 粒の大きさ（ボールの半径に対する割合）
   sParticles.elt.addEventListener('input', updateParticleRow);
   updateParticleRow();
+  // 足跡：ボールが通った所に跡が残り、しばらくすると粒になって消えていく
+  footCheck  = makeCheck(panel, 'FOOTPRINTS', false);
+  sTrailLife = makeSlider(panel, 'TRAIL_LIFE', 0.5, 2, 1.0, 0.1);     // 跡が消えるまでの秒数
+  sTrailSize = makeSlider(panel, 'TRAIL_SIZE', 0.1, 0.5, 0.15, 0.05); // 跡の半径（ボールの半径に対する割合）
+  footCheck.changed(updateFootRows);
+  updateFootRows();
 
   makeSection(panel, 'CAMERA');
   sElev  = makeSlider(panel, 'ELEV',      -89,   89,  30);
@@ -252,6 +259,8 @@ function setup() {
     ditherScreen.checked(false);
     strokeCheck.checked(true);
     topBallsCheck.checked(true);
+    footCheck.checked(false);
+    updateFootRows();
     underBallsCheck.checked(true);
     colorCPicker.value(COLOR_C_DEFAULT);
     bgPicker.value(BG_DEFAULT);
@@ -502,6 +511,7 @@ function draw() {
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     bounce: sBounce.value(),
     topBalls: topBallsCheck.checked(), underBalls: underBallsCheck.checked(),
+    footprints: footCheck.checked(), trailLife: sTrailLife.value(), trailSize: sTrailSize.value(),
     stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
@@ -640,7 +650,7 @@ function updateProjRows() {
 // 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
 const columnStates = new Map();
 function columnState(c) {
-  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [] });
+  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [], marks: [], lastMark: new Map() });
   return columnStates.get(c);
 }
 
@@ -682,6 +692,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     // 基準がずれたら、ローカル座標で持っている粒も同じだけずらす
     const d = (F - st.F) * p.step;
     for (const pt of st.particles) { pt.y -= d; pt.floor -= d; }
+    for (const mk of st.marks) mk.y -= d;
   }
   st.F = F;
   const yShift = -F * p.step;                     // 折り返しなしの座標 → ローカル座標
@@ -723,16 +734,22 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
         bA.y += yShift; bB.y += yShift;
         balls.push(bA, bB);
         // 着地したら粒を出す（前のフレームからの進みを見る）
-        if (base.particles > 0) {
+        if (base.particles > 0 || base.footprints) {
           const tag = w.under ? 'u' : 't';
-          detectContact(st, tag + j + 'A', qA, LA, p, bA, base);
-          detectContact(st, tag + j + 'B', qB, LB, p, bB, base);
+          const hitA = detectContact(st, tag + j + 'A', qA, LA, p, bA, base);
+          const hitB = detectContact(st, tag + j + 'B', qB, LB, p, bB, base);
+          if (base.footprints) {
+            leaveFootprint(st, tag + j + 'A', qA, LA, p, bA, base, hitA, yShift);
+            leaveFootprint(st, tag + j + 'B', qB, LB, p, bB, base, hitB, yShift);
+          }
         }
       }
     }
   }
   // 粒を動かし、ボールと一緒に描く（同じシェーディング・同じ色・影も落とす）
   updateParticles(st, p);
+  footStep = p.step;   // まとめるときに、基準 F のずれを高さに直すのに使う
+  updateFootprints(st, base);
   for (const pt of st.particles) balls.push({ x: pt.x, y: pt.y, z: pt.z, r: pt.r * (1 - pt.age / pt.life), ink: pt.ink });
 
   const ctx = { ...base, balls, centerY: s * p.step };
@@ -790,6 +807,13 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   }
   if (stepMode) drawMovingSteps(sh, k0, kMax + 1, p, stepAt, false);
   endShading(ctx);
+
+  // 足跡（階段の上、ボールの下）
+  // 上から見ているときは裏の跡（底面）、下から見ているときは表の跡（上面）は見えないので描かない
+  if (st.marks.length || (st.markChunks && st.markChunks.length)) {
+    const show = { top: base.eDeg > -BOTH_WORLDS_DEG, under: base.eDeg < BOTH_WORLDS_DEG };
+    drawFootprints(shading, ctx, st, base.trailLife, show, p.step);
+  }
 
   // ボール：シェーディングにボール用の塗りがあればそれで、なければ通常描画
   if (!shadeBalls(shading, ctx)) {
@@ -893,7 +917,7 @@ function contactStage(q, L, steps) {
 function detectContact(st, key, q, L, p, ball, base) {
   const prev = st.prevQ.get(key);
   st.prevQ.set(key, q);
-  if (prev === undefined || prev === q || abs(q - prev) > 0.5) return;
+  if (prev === undefined || prev === q || abs(q - prev) > 0.5) return false;
   const a = contactStage(prev, L, p.steps), b = contactStage(q, L, p.steps);
   let hit = false;
   if (q > prev) {
@@ -905,7 +929,8 @@ function detectContact(st, key, q, L, p, ball, base) {
     if (b.n === a.n && a.s >= 0 && b.s >= 0 && b.s < a.s) hit = true;
     else if (b.n === a.n && a.s >= 0 && b.s === -1) hit = true;
   }
-  if (hit) spawnParticles(st, ball, p, base);
+  if (hit && base.particles > 0) spawnParticles(st, ball, p, base);
+  return hit;
 }
 
 // ボールの足元から、粒を放射状に飛ばす
@@ -953,6 +978,120 @@ function updateParticles(st, p) {
 function updateColumnRows() {
   const multi = sColumns.value() > 1;
   for (const el of [sColSpacing, flowSel, orbitFlowSel, sAnimPhase]) el.row.style('display', multi ? 'flex' : 'none');
+}
+
+// ---------------------------------------------------------------------
+// 足跡
+// ---------------------------------------------------------------------
+// ボールが面に触れている所に、跡（薄い円盤）を残す。跡は階段に貼りついて一緒に流れる。
+//   転がっているとき（BOUNCE 0、または踊り場の上）：通った道に跡を細かく並べて線にする
+//   跳ねているとき（階段の上）：着地した瞬間にだけ跡を置く（hit）
+// STEP_SQUASH がオンのときは、段は消えていくので階段の上には残さない
+// yShift：折り返しなしの座標 → ローカル座標へのずれ（面に触れているかの判定に使う）
+function leaveFootprint(st, key, q, L, p, ball, base, hit, yShift) {
+  const f = q - floor(q);
+  const onLanding = f < L;
+  if (!onLanding && base.stepSquash) { st.lastMark.delete(key); return; }
+  const r = p.R * base.trailSize;
+  const rolling = onLanding || base.bounce <= 0;
+  const g = ball.under ? -1 : 1;                     // 面のある向き（表は下、裏は上）
+  const at = { x: ball.x, y: ball.y + g * p.R, z: ball.z };   // ボールが触れている面の点
+  if (rolling) {
+    // 面から離れている間（裏の世界で縁から落ちている間など）は残さない
+    const n = ball.under ? -floor(q) : floor(q);
+    const surf = ball.under ? contactYUnder(ball.x, ball.z, n, p) : contactY(ball.x, ball.z, n, p);
+    if (abs(ball.y - yShift - surf) > 0.5) { st.lastMark.delete(key); return; }
+    // 前の跡から一定の距離（半径の0.8倍）進んだら、次の跡を置く
+    const last = st.lastMark.get(key);
+    const d = last ? dist(last.x, last.y, last.z, at.x, at.y, at.z) : Infinity;
+    if (d < r * 0.8) return;
+    st.lastMark.set(key, at);
+  } else {
+    st.lastMark.delete(key);
+    if (!hit) return;
+  }
+  st.marks.push({ x: at.x, y: at.y, z: at.z, r, under: ball.under, born: st.markClock || 0 });
+}
+
+// 跡の年齢を進め、TRAIL_LIFE を過ぎたものを捨てる
+// 跡は1つずつ描くと重い（p5 は1回描くごとの手間が大きい）ので、まとめて描く：
+//   1. FOOT_CHUNK_SEC ごとに、その間に置いた跡を世界ごとに1つの形（buildGeometry）にする（小さいまとまり）
+//   2. 小さいまとまりが FOOT_MERGE 個たまったら、1つの大きいまとまりに作り直す
+// 跡ごとに置いた時刻を頂点の色に書き込んでおき、シェーダーが跡ごとに薄くする。
+// まとめる前の新しい跡（st.marks）だけは1つずつ描く
+let footStep = 1;
+const FOOT_CHUNK_SEC = 0.1;
+const FOOT_MERGE = 10;
+function updateFootprints(st, base) {
+  if (!st.markChunks) { st.markChunks = []; st.markClock = 0; st.chunkStart = 0; }
+  if (!paused) st.markClock += min(deltaTime, 100) / 1000;
+  // 一番新しい跡まで消えたまとまりを捨てる
+  st.markChunks = st.markChunks.filter(ch => {
+    const alive = st.markClock - ch.tEnd < base.trailLife;
+    if (!alive) freeGeometry(ch.geo);
+    return alive;
+  });
+  st.marks = st.marks.filter(mk => st.markClock - mk.born < base.trailLife);
+  // 一定時間ごとに、新しい跡を小さいまとまりにする（多すぎるときは時間を待たずに）
+  if (st.markClock - st.chunkStart >= FOOT_CHUNK_SEC || st.marks.length > 300) {
+    for (const under of [false, true]) {
+      const list = st.marks.filter(mk => mk.under === under);
+      if (list.length) st.markChunks.push(buildFootChunk(list, st.F, under, false));
+    }
+    st.marks = [];
+    st.chunkStart = st.markClock;
+    // 小さいまとまりがたまったら、世界ごとに1つにまとめ直す（基準 F は今のものにそろえる）
+    for (const under of [false, true]) {
+      const small = st.markChunks.filter(ch => !ch.big && ch.under === under);
+      if (small.length < FOOT_MERGE) continue;
+      const list = [];
+      for (const ch of small) {
+        const d = (ch.F - st.F) * ch.step;
+        for (const mk of ch.marks) list.push({ ...mk, y: mk.y + d });
+        freeGeometry(ch.geo);
+      }
+      st.markChunks = st.markChunks.filter(ch => !small.includes(ch));
+      st.markChunks.push(buildFootChunk(list, st.F, under, true));
+    }
+  }
+}
+
+// 跡のリストを1つの形にする。跡は面に貼った平たい12角形（buildGeometry は1つずつの手間が大きいので、
+// 頂点を直接並べて作る）。置いた時刻は、まとまりの時間幅の中での割合として頂点の色（赤）に入れる
+const FOOT_SIDES = 12;
+let footGeoCount = 0;
+function buildFootChunk(list, F, under, big) {
+  const t0 = min(...list.map(mk => mk.born));
+  const tEnd = max(...list.map(mk => mk.born));
+  const span = max(tEnd - t0, 1e-3);
+  const geo = new p5.Geometry(1, 1);
+  geo.gid = 'footprint-' + (footGeoCount++);
+  const ny = under ? 1 : -1;   // 面の外向き（表は上 = -y、裏は下 = +y）
+  for (const mk of list) {
+    const base = geo.vertices.length;
+    const y = footCenterY(mk) + ny * FOOT_H / 2;   // 円盤の外側の面
+    const t = (mk.born - t0) / span;
+    for (let i = 0; i <= FOOT_SIDES; i++) {
+      // 0 番目が中心、1〜FOOT_SIDES 番目が周
+      const a = (i - 1) / FOOT_SIDES * TWO_PI;
+      const rr = i === 0 ? 0 : mk.r;
+      geo.vertices.push(createVector(mk.x + rr * cos(a), y, mk.z + rr * sin(a)));
+      geo.vertexNormals.push(createVector(0, ny, 0));
+      geo.uvs.push(0, 0);
+      geo.vertexColors.push(t, 0, 0, 1);
+    }
+    for (let i = 1; i <= FOOT_SIDES; i++) {
+      geo.faces.push([base, base + i, base + (i % FOOT_SIDES) + 1]);
+    }
+  }
+  return { geo, F, step: footStep, t0, span, tEnd, under, big, marks: big ? [] : list };
+}
+
+// FOOTPRINTS がオンのときだけ、跡の長さと大きさのスライダーを出す
+function updateFootRows() {
+  const on = footCheck.checked();
+  sTrailLife.row.style('display', on ? 'flex' : 'none');
+  sTrailSize.row.style('display', on ? 'flex' : 'none');
 }
 
 // PARTICLES が 0 なら、粒の大きさのスライダーを隠す
