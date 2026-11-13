@@ -34,8 +34,10 @@ let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
 let strokeCheck, sStrokeWeight;
+let handCheck, sHandWobble, sHandBoil;
 let colorCPicker, ballASel, ballBSel;
 let bgSepCheck, bgPicker;   // 背景色を COLOR_A / B とは別に決める
+let pixCheck, sPixSize, sPixInk;   // POST：大きな四角い画素に置き換える
 let mirrorXCheck, mirrorYCheck, sMirrorU, sMirrorV;   // POST：画面の中央で折り返す   // 3色のシェーディング（TRI）用
 let sColumns, sColSpacing, flowSel, orbitFlowSel, sAnimPhase;
 // 形のアニメーション（呼吸）：スライダーの値を、最小〜最大の間でサイン波で動かす
@@ -139,6 +141,9 @@ function setup() {
   shadingSel = makeSelect(panel, 'SHADING', Object.keys(SHADINGS), 'FLAT');
   strokeCheck = makeCheck(panel, 'STROKE', true);  // 箱の輪郭線を描く（輪郭線のあるシェーディングのみ）
   sStrokeWeight = makeSlider(panel, 'STROKE_WEIGHT', 0.5, 6, 1, 0.5);   // 輪郭線の太さ（画面ピクセル）
+  handCheck   = makeCheck(panel, 'HANDWRITING', false);             // 輪郭線を手描き風にする
+  sHandWobble = makeSlider(panel, 'HAND_WOBBLE', 0.5, 8, 2, 0.5);   // 線のぶれの大きさ（画面ピクセル）
+  sHandBoil   = makeSlider(panel, 'HAND_BOIL', 0, 12, 4, 1);        // 線を描き直す回数（1秒あたり。0 で止める）
   // GRAIN の白黒の置き換え方（ディザリング）
   ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE', 'HATCH'], 'RANDOM');
   ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
@@ -159,7 +164,11 @@ function setup() {
     show(sHatchPitch, grain && hatch);
     const st = resolveShading(shadingSel.value()).stroke;
     show(strokeCheck, st === true);   // 'always'（NONE）は常に線を描くので、オン・オフは出さない
-    show(sStrokeWeight, st === 'always' || (st === true && strokeCheck.checked()));
+    const lines = st === 'always' || (st === true && strokeCheck.checked());
+    show(sStrokeWeight, lines);
+    show(handCheck, lines);
+    show(sHandWobble, lines && handCheck.checked());
+    show(sHandBoil, lines && handCheck.checked());
     show(sShadowTone, resolveShading(shadingSel.value()).shadow !== false);
   };
 
@@ -201,6 +210,7 @@ function setup() {
 
   // シェーディングを切り替えたときなどに、関係する項目だけを表示する
   strokeCheck.changed(updateShadingRows);
+  handCheck.changed(updateShadingRows);
   shadingSel.changed(updateShadingRows);
   ditherSel.changed(updateShadingRows);
   updateShadingRows();
@@ -229,6 +239,16 @@ function setup() {
   mirrorXCheck.changed(updateMirrorRows);
   mirrorYCheck.changed(updateMirrorRows);
   updateMirrorRows();
+  pixCheck = makeCheck(panel, 'PIXELATE', false);                  // 画面を大きな四角い画素に置き換える
+  sPixSize = makeSlider(panel, 'PIXEL_SIZE', 2, 10, 4, 1);          // 画素1つの大きさ（画面ピクセル）
+  sPixInk  = makeSlider(panel, 'PIXEL_INK', 0.1, 1, 0.4, 0.1);      // この太さ（画面ピクセル）の線がセルを横切るほど暗い色があれば、その色にする
+  const updatePixRows = () => {
+    const on = pixCheck.checked();
+    sPixSize.row.style('display', on ? 'flex' : 'none');
+    sPixInk.row.style('display', on ? 'flex' : 'none');
+  };
+  pixCheck.changed(updatePixRows);
+  updatePixRows();
 
   const btnRow = createDiv().parent(panel);
   btnRow.style('display', 'flex');
@@ -258,6 +278,7 @@ function setup() {
     ditherSel.selected('RANDOM');
     ditherScreen.checked(false);
     strokeCheck.checked(true);
+    handCheck.checked(false);
     topBallsCheck.checked(true);
     footCheck.checked(false);
     updateFootRows();
@@ -272,6 +293,8 @@ function setup() {
     flowSel.selected('ALTERNATE');
     orbitFlowSel.selected('SAME');
     mirrorXCheck.checked(false);
+    pixCheck.checked(false);
+    pixCheck.elt.querySelector('input').dispatchEvent(new Event('change', { bubbles: true }));
     mirrorYCheck.checked(false);
     mirrorXCheck.elt.querySelector('input').dispatchEvent(new Event('change', { bubbles: true }));
   });
@@ -480,6 +503,8 @@ function draw() {
   const inkRGB = inverted ? colA : colB;
   // 背景色（BG_SEPARATE がオンなら BG_COLOR、オフなら紙の色）
   const bgRGB = bgSepCheck.checked() ? toRgb01(bgPicker) : paperRGB;
+  // POST：PIXELATE がオンなら、ここから画面をフレームバッファに描く
+  const pixOn = beginPixelate(pixCheck.checked());
   background(bgRGB[0] * 255, bgRGB[1] * 255, bgRGB[2] * 255);
 
   if (!paused) animTime += deltaTime / 1000;
@@ -509,6 +534,10 @@ function draw() {
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(), hatchPitch: sHatchPitch.value(),
     stairShadowTone: sShadowTone.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
+    // 手描きの線：ぶれ（ワールド単位）と、いま使う描き直しの番号
+    hand: strokeOn(shading) && handCheck.checked(),
+    handAmp: sHandWobble.value() / zoom,
+    handVariant: sHandBoil.value() > 0 ? floor(animTime * sHandBoil.value()) % HAND_VARIANTS : 0,
     bounce: sBounce.value(),
     topBalls: topBallsCheck.checked(), underBalls: underBallsCheck.checked(),
     footprints: footCheck.checked(), trailLife: sTrailLife.value(), trailSize: sTrailSize.value(),
@@ -608,6 +637,18 @@ function draw() {
   // POST：画面の中央で折り返す
   applyMirror(mirrorXCheck.checked(), mirrorYCheck.checked(),
               [sMirrorU.value(), sMirrorV.value()], bgRGB);
+
+  // POST：大きな四角い画素に置き換える。使う色（パレット）は紙・インク・背景と、
+  // TRI なら3色目、FLAT なら中間色（ほかのシェーディングは紙とインクだけで描く）
+  if (pixOn) {
+    const pal = [paperRGB, inkRGB, bgRGB];
+    if (tri) pal.push(colC);
+    else if (shading === 'FLAT') {
+      pal.push(midColor(resolveShading(shading),
+        { ink: inkRGB, paper: paperRGB, stairShadowTone: sShadowTone.value(), mixMode: mixSel.value() }));
+    }
+    endPixelate(sPixSize.value(), sPixInk.value(), pal);
+  }
 }
 
 // 画面がどれだけ裏の世界についていくか（0：表、1：裏）。ELEV が ±BOTH_WORLDS_DEG の間でなめらかに変わる
@@ -797,7 +838,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   setView();
   push();
   translate(0, -s * p.step, 0);
-  const sh = beginShading(shading, ctx);
+  // 手描きのときは、箱の線は描かずに塗りだけを描き、あとで手描きの線を重ねる
+  const sh = beginShading(shading, base.hand ? { ...ctx, stroke: false } : ctx);
   for (let k = k0; k <= kMax; k += 2) {
     sh.setUniform('uOffset', [0, k * p.step, 0]);
     push();
@@ -807,6 +849,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   }
   if (stepMode) drawMovingSteps(sh, k0, kMax + 1, p, stepAt, false);
   endShading(ctx);
+  if (base.hand) drawHandLines(p, base, geo, stepMode, k0, kMax, stepAt, F);
 
   // 足跡（階段の上、ボールの下）
   // 上から見ているときは裏の跡（底面）、下から見ているときは表の跡（上面）は見えないので描かない
@@ -820,7 +863,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     const ink = inkColor255(ctx);
     const paper = paperColor255(ctx);
     // 紙のボールの輪郭線は、箱の線と同じく STROKE のオン・オフと太さに従う
-    for (const b of balls) drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight);
+    balls.forEach((b, i) => drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight,
+      base.hand ? { amp: base.handAmp, seed: base.handVariant * 977 + i } : null));
   }
   pop();
 }
@@ -1158,7 +1202,8 @@ function buildWarp(L, len) {
 
 // シェーダーを使わない場合のボール。col：塗りの色 [r,g,b]（0〜255）
 // 紙の色の球（outline = true）は背景と同化するので、カメラに正対する円で輪郭線を描く
-function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1) {
+// hand：手描きの輪郭線にするなら { amp：ぶれ（ワールド単位）, seed }
+function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1, hand = null) {
   push();
   translate(pos.x, pos.y, pos.z);
   fill(col);
@@ -1170,7 +1215,8 @@ function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1) {
     noFill();
     stroke(lineCol);
     strokeWeight(lineW);
-    circle(0, 0, R * 2);
+    if (hand) handCircle(R, hand.amp, hand.seed);
+    else circle(0, 0, R * 2);
   }
   pop();
 }
@@ -1202,6 +1248,142 @@ function stairGeometry(p, c = 0, withStroke = true, landingsOnly = false) {
     entry.key = geoKey;
   }
   return entry.geo;
+}
+
+// ---------------------------------------------------------------------
+// 手描きの線（HANDWRITING）
+// ---------------------------------------------------------------------
+// 箱の輪郭線（box() の線）をそのまま使い、p5 の線のシェーダーで線の端を少しずつずらして描く。
+//   ・辺ごとに、画面の上で線と垂直な向きに少しずれる（両端のずれ方が違うので、少し傾く）
+//   ・両端が辺の向きに少し伸びたり縮んだりする（角で線がはみ出したり、届かなかったりする）
+//   ・ずらし方を変えて2回描く（線が2本重なる）
+// 角でつながる線どうしは別々にずれるので、角のつなぎ目（join）は描かない。
+// ずれ方は「辺（箱の中での位置と向き）」と種から決まる乱数で決める。形が呼吸しても、
+// 画面が流れても、同じ辺は同じようにずれる。HAND_BOIL では種を順に切り替える（線の震え）
+const HAND_VARIANTS = 3;
+const HAND_PASSES = 2;   // 1辺を何本の線で描くか
+
+let handStrokeShader = null;
+function getHandStrokeShader() {
+  if (handStrokeShader) return handStrokeShader;
+  handStrokeShader = baseStrokeShader().modify({
+    uniforms: { 'float uHandAmp': 2, 'float uHandSeed': 0 },
+    declarations: `
+      vec4 handRnd;
+      float handJoin;
+      float handHash(vec4 p) {
+        p = fract(p * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+        p += dot(p, p.wzxy + 33.33);
+        return fract((p.x + p.y) * (p.z + p.w));
+      }
+    `,
+    // 物体の座標で乱数を決める（辺ごと・端ごと）
+    'StrokeVertex getObjectInputs': `(StrokeVertex inputs) {
+      vec3 tIn = inputs.tangentIn, tOut = inputs.tangentOut;
+      bool hasIn = dot(tIn, tIn) > 1e-12, hasOut = dot(tOut, tOut) > 1e-12;
+      // 2本の線のつなぎ目（向きの違う接線を両方持つ点）は描かない
+      handJoin = (hasIn && hasOut && distance(normalize(tIn), normalize(tOut)) > 1e-3) ? 1.0 : 0.0;
+      vec3 d = abs(normalize(hasIn ? tIn : tOut));
+      vec3 q = floor(inputs.position * 64.0 + 0.5) / 64.0;   // 浮動小数の誤差をならす
+      vec3 pe = q - dot(q, d) * d;                         // 辺の向きの成分を除く（辺の両端で同じ値）
+      float sd = uHandSeed;
+      handRnd = vec4(
+        handHash(vec4(pe + d * 3.7, sd)),          // 辺ごと：線と垂直なずれ
+        handHash(vec4(pe + d * 5.1, sd + 17.0)),   // 辺ごと：（予備）
+        handHash(vec4(q, sd + 31.0)),              // 端ごと：線と垂直なずれ
+        handHash(vec4(q, sd + 47.0)));             // 端ごと：辺の向きの伸び縮み
+      return inputs;
+    }`,
+    // カメラの座標でずらす（画面の上で線と垂直な向き・辺の向き。少しカメラ側に寄せて、面に隠れないようにする）
+    'StrokeVertex getCameraInputs': `(StrokeVertex inputs) {
+      vec3 t = dot(inputs.tangentIn, inputs.tangentIn) > 1e-12 ? inputs.tangentIn : inputs.tangentOut;
+      float l = length(t.xy);
+      vec2 dir = l > 1e-6 ? t.xy / l : vec2(1.0, 0.0);
+      vec2 nrm = vec2(-dir.y, dir.x);
+      float side = (handRnd.x * 2.0 - 1.0) * 0.7 + (handRnd.z * 2.0 - 1.0) * 0.5;
+      float along = (handRnd.w * 2.0 - 1.0) * 4.0;   // 伸び縮みは垂直なずれより大きくする
+      inputs.position.xy += (nrm * side + dir * along) * uHandAmp;
+      inputs.position.z += uHandAmp * 3.0;
+      if (handJoin > 0.5) inputs.weight = 0.0;
+      return inputs;
+    }`,
+  });
+  return handStrokeShader;
+}
+
+// 手描きの線の種（折り返しなしの踊り場番号・何本目の線・HAND_BOIL の番号から決める）
+function handSeed(kk, pass, variant) {
+  return ((((kk % 997) + 997) % 997) * HAND_PASSES + pass) * HAND_VARIANTS + variant + 1;
+}
+
+// 階段の手描きの線を描く（塗りを描いたあとに重ねる）
+// geo：階段（2踊り場分、輪郭線つき）。F：ローカル座標の基準（k + F が折り返しなしの番号）
+function drawHandLines(p, base, geo, stepMode, k0, kMax, stepAt, F) {
+  const hs = getHandStrokeShader();
+  push();
+  strokeShader(hs);
+  stroke(inkColor255(base));
+  strokeWeight(base.strokeWeight || 1);
+  noFill();
+  for (let pass = 0; pass < HAND_PASSES; pass++) {
+    hs.setUniform('uHandAmp', base.handAmp);
+    for (let k = k0; k <= kMax; k += 2) {
+      hs.setUniform('uHandSeed', handSeed(k + F, pass, base.handVariant));
+      push();
+      translate(0, k * p.step, 0);
+      model(geo);
+      pop();
+    }
+    if (stepMode) {
+      // STEP_SQUASH の段：大きさ1の箱を拡大して描く（縮んだ段は、ぶれも一緒に縮む）
+      for (let k = k0; k <= kMax + 1; k++) {
+        for (let i = 1; i <= p.steps; i++) {
+          const t = stepAt(k, i);
+          if (!t) continue;
+          hs.setUniform('uHandSeed', handSeed((k + F) * 64 + i, pass, base.handVariant));
+          // 縮んだ段はぶれも小さくする（小さな段の線が大きくはみ出さないように）
+          const f = constrain(min(t.sx / p.run, t.sy / p.rise, t.sz / p.sw), 0, 1);
+          hs.setUniform('uHandAmp', base.handAmp * f);
+          push();
+          translate(t.cx, t.cy, t.cz);
+          scale(t.sx, t.sy, t.sz);
+          box(1);
+          pop();
+        }
+      }
+    }
+  }
+  resetShader();
+  pop();
+}
+
+// 決まった種から乱数列を作る（mulberry32）
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 手描きの円（ボールの輪郭線）：半径が少しうねり、描き終わりが描き始めを少し追い越して、ぴったり閉じない
+function handCircle(R, amp, seed) {
+  const rnd = makeRng(seed * 2654435761 + 7);
+  const th0 = rnd() * TWO_PI;
+  const over = 0.25 + rnd() * 0.35;          // 追い越す角度
+  const ph1 = rnd() * TWO_PI, ph2 = rnd() * TWO_PI;
+  const drift = (rnd() - 0.3) * amp * 1.5;   // 描き終わりで半径がずれる量
+  const N = 48;
+  beginShape();
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const th = th0 + t * (TWO_PI + over);
+    const r = R + amp * (0.5 + 0.35 * sin(2 * th + ph1) + 0.25 * sin(3 * th + ph2)) + drift * t;
+    vertex(r * cos(th), r * sin(th), 0);
+  }
+  endShape();
 }
 
 // 踊り場kと、そこから1つ上（反対側）へ向かう階段の箱リスト

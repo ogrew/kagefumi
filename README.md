@@ -40,10 +40,10 @@ python3 -m http.server 8765
 
 | セクション | 主な項目 |
 |---|---|
-| SHADING | 塗り方（下の表）。`STROKE` `STROKE_WEIGHT` で箱の輪郭線、粒で描く塗り方では `DITHER`（`RANDOM` / `BAYER` / `HALFTONE` / `HATCH`）と模様の大きさ |
+| SHADING | 塗り方（下の表）。`STROKE` `STROKE_WEIGHT` で箱の輪郭線（`HANDWRITING` で手描き風。`HAND_WOBBLE` でぶれの大きさ、`HAND_BOIL` で線が震える速さ）、粒で描く塗り方では `DITHER`（`RANDOM` / `BAYER` / `HALFTONE` / `HATCH`）と模様の大きさ |
 | COLOR | 2色 `COLOR_A`（紙）`COLOR_B`（インク）、`INVERT`、中間色の計算方法 `MIX`。TRI では3色目 `COLOR_C` とボールの色。`BG_SEPARATE` で背景色を別に決められる |
 | LIGHT | 光源 `CAMERA`（カメラの少し上から）/ `FIXED`（太陽が円周軌道を回る）。階段の影の濃さ `SHADOW_TONE` |
-| POST | 描き終えた画面を中央で折り返す `MIRROR_X` / `MIRROR_Y`（`MIRROR_U` / `MIRROR_V` で折り返す元の位置） |
+| POST | 描き終えた画面を中央で折り返す `MIRROR_X` / `MIRROR_Y`（`MIRROR_U` / `MIRROR_V` で折り返す元の位置）。`PIXELATE` で画面を大きな四角い画素に置き換える（`PIXEL_SIZE` で画素の大きさ、`PIXEL_INK` で細い線をどれだけ拾うか） |
 
 | SHADING | 塗り方 |
 |---|---|

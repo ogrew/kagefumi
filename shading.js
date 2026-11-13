@@ -808,3 +808,123 @@ function applyMirror(mx, my, center, bg) {
   mirrorShader.setUniform('uBg', bg);
   filter(mirrorShader);
 }
+
+// ---------------------------------------------------------------------
+// ポストプロセス：画面を大きな四角い画素（セル）に置き換える（パネルの PIXELATE）
+//   1. 画面全体をフレームバッファ（sceneFb）に描く
+//   2. セル1つを1画素とする小さなフレームバッファ（lowFb）に、セルの色を1色選んで描く
+//   3. lowFb を、にじませずに画面いっぱいに引き伸ばす
+// セルの色の選び方：セルの中の画素を、パレット（紙・インク・中間色・背景など）の一番近い色に
+// 寄せて数える。暗い色から順に見て、「太さ PIXEL_INK の線がセルを横切る」ほどの量がある最初の色にする
+// （どれも届かなければ一番多い色）。細い線も1セル幅の線として残り、中間の色は出ない
+// ---------------------------------------------------------------------
+const PIX_PAL = 5;   // パレットの色数（足りない分は同じ色で埋める）
+const PIX_LOW_FRAG = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uScene;
+uniform vec2 uSceneSize;   // 画面の大きさ（デバイスの画素）
+uniform vec2 uLowSize;     // セルの数
+uniform float uCell;       // セル1つの大きさ（デバイスの画素）
+uniform float uNeed;       // この数以上の画素がある色を選ぶ（PIXEL_INK から決める）
+uniform vec3 uP0, uP1, uP2, uP3, uP4;   // パレット（暗い順）
+void main() {
+  vec2 org = floor(vTexCoord * uLowSize) * uCell;
+  vec4 cntA = vec4(0.0);   // 色0〜3の数
+  float cnt4 = 0.0;        // 色4の数
+  float total = 0.0;
+  for (int j = 0; j < 64; j++) {
+    if (float(j) >= uCell) break;
+    for (int i = 0; i < 64; i++) {
+      if (float(i) >= uCell) break;
+      vec2 px = org + vec2(float(i), float(j)) + 0.5;
+      if (px.x > uSceneSize.x || px.y > uSceneSize.y) continue;
+      vec3 c = texture2D(uScene, px / uSceneSize).rgb;
+      vec4 dA = vec4(dot(c - uP0, c - uP0), dot(c - uP1, c - uP1), dot(c - uP2, c - uP2), dot(c - uP3, c - uP3));
+      float d4 = dot(c - uP4, c - uP4);
+      float m = min(min(min(dA.x, dA.y), min(dA.z, dA.w)), d4);
+      // 一番近い色を1つだけ数える（同じ距離なら暗い方）
+      if (dA.x == m) cntA.x += 1.0;
+      else if (dA.y == m) cntA.y += 1.0;
+      else if (dA.z == m) cntA.z += 1.0;
+      else if (dA.w == m) cntA.w += 1.0;
+      else cnt4 += 1.0;
+      total += 1.0;
+    }
+  }
+  float need = max(min(uNeed, total), 1.0);
+  vec3 col;
+  if (cntA.x >= need) col = uP0;
+  else if (cntA.y >= need) col = uP1;
+  else if (cntA.z >= need) col = uP2;
+  else if (cntA.w >= need) col = uP3;
+  else if (cnt4 >= need) col = uP4;
+  else {
+    // どれも届かない（PIXEL_INK が大きい）：一番多い色
+    float best = cntA.x; col = uP0;
+    if (cntA.y > best) { best = cntA.y; col = uP1; }
+    if (cntA.z > best) { best = cntA.z; col = uP2; }
+    if (cntA.w > best) { best = cntA.w; col = uP3; }
+    if (cnt4 > best) { col = uP4; }
+  }
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+const PIX_UP_FRAG = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D uLow;
+uniform vec2 uSceneSize;
+uniform vec2 uLowSize;
+uniform float uCell;
+void main() {
+  vec2 cell = floor(vTexCoord * uSceneSize / uCell);
+  gl_FragColor = vec4(texture2D(uLow, (cell + 0.5) / uLowSize).rgb, 1.0);
+}
+`;
+let pixSceneFb = null, pixLowFb = null, pixLowShader = null, pixUpShader = null;
+
+// 画面を描き始める前に呼ぶ。on なら、ここから endPixelate までをフレームバッファに描く
+function beginPixelate(on) {
+  if (!on) return false;
+  if (!pixSceneFb) pixSceneFb = createFramebuffer({ antialias: true });
+  pixSceneFb.begin();
+  return true;
+}
+
+// size：セルの大きさ（画面ピクセル）/ thr：PIXEL_INK（画面ピクセル）/ palette：色 [r,g,b]（0〜1）のリスト
+function endPixelate(size, thr, palette) {
+  pixSceneFb.end();
+  const d = pixelDensity();
+  const cell = max(1, min(64, Math.round(size * d)));
+  const W = pixSceneFb.width * d, H = pixSceneFb.height * d;
+  const lw = Math.ceil(W / cell), lh = Math.ceil(H / cell);
+  if (!pixLowFb) {
+    pixLowFb = createFramebuffer({ width: lw, height: lh, density: 1, textureFiltering: NEAREST, antialias: false, depth: false });
+  } else if (pixLowFb.width !== lw || pixLowFb.height !== lh) {
+    pixLowFb.resize(lw, lh);
+  }
+  if (!pixLowShader) pixLowShader = createFilterShader(PIX_LOW_FRAG);
+  if (!pixUpShader) pixUpShader = createFilterShader(PIX_UP_FRAG);
+  // パレットを暗い順に並べ、5色にそろえる
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const pal = palette.slice().sort((a, b) => lum(a) - lum(b));
+  while (pal.length < PIX_PAL) pal.push(pal[pal.length - 1]);
+
+  pixLowFb.begin();
+  pixLowShader.setUniform('uScene', pixSceneFb);
+  pixLowShader.setUniform('uSceneSize', [W, H]);
+  pixLowShader.setUniform('uLowSize', [lw, lh]);
+  pixLowShader.setUniform('uCell', cell);
+  // PIXEL_INK：「太さ PIXEL_INK（画面ピクセル）の線がセルを横切る」くらいの量があれば、その色にする
+  pixLowShader.setUniform('uNeed', thr * d * cell);
+  for (let i = 0; i < PIX_PAL; i++) pixLowShader.setUniform('uP' + i, pal[i]);
+  filter(pixLowShader);
+  pixLowFb.end();
+
+  pixUpShader.setUniform('uLow', pixLowFb);
+  pixUpShader.setUniform('uSceneSize', [W, H]);
+  pixUpShader.setUniform('uLowSize', [lw, lh]);
+  pixUpShader.setUniform('uCell', cell);
+  filter(pixUpShader);
+}
