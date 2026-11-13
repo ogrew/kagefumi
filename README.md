@@ -21,29 +21,75 @@ python3 -m http.server 8765
 ## パネル
 
 パネルは大きく2つに分かれている。**Kagefumi**（p5 側：形と動き）と **LOOK**（シェーダー側：見た目）。
-選んだ項目に関係する行だけが表示される。
+選んだ項目に関係する行だけが表示される（チェックを入れると出てくるスライダーなど）。
+
+アニメーション（`_ANIM`）を付けた項目は、チェックを入れると `_MIN` `_MAX` `_SPEED`（1秒あたりの往復回数）が出て、
+元のスライダーは操作できなくなる。値はサイン波で `_MIN` と `_MAX` の間を往復する。
 
 ### Kagefumi（形と動き）
 
-| セクション | 主な項目 |
-|---|---|
-| LANDING | 踊り場の大きさ（`W` `D` `H`）と上下の間隔 `V_GAP`。`V_GAP_ANIM` で間隔がサイン波で呼吸する |
-| STAIRS | 段数 `STEPS`、向かい合う踊り場の間隔 `GAP`（`GAP_ANIM` あり）。`STEP_SQUASH` で段がボールの近くにだけ伸びて現れ、去ると縮んで消える（`STEP_FADE` で変化の長さ） |
-| BALL | 大きさ・速さ・踊り場での折り返し（`L_A` `L_B`）・ときどき止まる（`STOP_PROB` `STOP_LEN`）。`TOP_BALLS` / `UNDER_BALLS` で表・裏の世界のボールの表示、`BOUNCE` で段を跳ねて下りる、`PARTICLES` で着地のたびに粒が飛び散る、`FOOTPRINTS` で通った跡が残り `TRAIL_LIFE` 秒で消える（`TRAIL_SIZE` で跡の大きさ） |
-| CAMERA | 仰角 `ELEV`（マイナスで下から＝裏の世界。`ELEV_ANIM` で往復）、`ROLL`、`PROJECTION`（`ORTHO` / `PERSPECTIVE`。PERSPECTIVE は `FOV` で遠近感の強さ）、`ZOOM`、周回の速さ `ORBIT_SPEED` |
-| LAYOUT | 階段を横に並べる `COLUMNS`。2列以上のとき、間隔・列ごとの進む向き（`FLOW`）・周回の向き（`ORBIT_FLOW`）・アニメーションの位相のずれ（`ANIM_PHASE`）を設定できる |
+#### LANDING：踊り場
 
-アニメーション（`_ANIM`）を付けた項目は、チェックを入れると `_MIN` `_MAX` `_SPEED`（1秒あたりの往復回数）が出て、
-元のスライダーは操作できなくなる。
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `W` `D` `H` | 120 / 240 / 30 | 踊り場の幅・奥行き・厚さ |
+| `V_GAP` | 180 | 上下に重なる踊り場の間隔 |
+| `V_GAP_ANIM` | オフ | 間隔が呼吸する（MIN 120 / MAX 180 / SPEED 0.14） |
+
+#### STAIRS：階段
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `STEPS` | 6 | 段数 |
+| `GAP` | 180 | 向かい合う踊り場の間隔（＝階段の長さ） |
+| `GAP_ANIM` | オフ | 間隔が呼吸する（MIN 80 / MAX 160 / SPEED 0.21） |
+| `STEP_SQUASH` | オフ | 段がボールの近くにだけ伸びて現れ、ボールが去ると縮んで消える |
+| `STEP_FADE` | 1 | 段が現れる・消えるのにかかる長さ（段何個分か） |
+
+#### BALL：ボール
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `BALL_R_RATIO` | 0.75 | ボールの大きさ |
+| `SPEED` | 0.8 | 進む速さ（マイナスで逆向き） |
+| `L_A` `L_B` | 0.5 / 0.7 | 黒・白のボールが踊り場で U 字に折り返す時間の割合 |
+| `STOP_PROB` `STOP_LEN` | 0.3 / 0.2 | ときどき止まる確率と、止まる長さ |
+| `TOP_BALLS` `UNDER_BALLS` | オン / オン | 表の世界・裏の世界のボールを描くか |
+| `BOUNCE` | 0 | 段を跳ねて下りる高さ（段の高さの何倍か。0 で転がる） |
+| `PARTICLES` | 0 | 着地のたびに飛び散る粒の数 |
+| `PARTICLE_SIZE` | 0.25 | 粒の大きさ（ボールの半径に対する割合） |
+| `FOOTPRINTS` | オフ | 通った跡を残す。転がると線、跳ねると着地点にスタンプ。点が間引かれて消えていく |
+| `TRAIL_LIFE` | 1.0 | 跡が消えるまでの秒数 |
+| `TRAIL_SIZE` | 0.15 | 跡の大きさ（ボールの半径に対する割合） |
+
+#### CAMERA：カメラ
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `ELEV` | 30 | 仰角。マイナスで下から見上げる（裏の世界） |
+| `ELEV_ANIM` | オフ | 上からと下からを往復する（MIN -30 / MAX 30 / SPEED 0.03） |
+| `AZIM0` | 45 | 方位角の初期値 |
+| `ROLL` | 0 | 画面の傾き |
+| `PROJECTION` | ORTHO | `ORTHO`（平行投影）/ `PERSPECTIVE`（透視投影） |
+| `ZOOM` | 1 | 拡大率 |
+| `FOV` | 40 | PERSPECTIVE の画角（広いほど遠近感が強い） |
+| `ORBIT_SPEED` | 0.2 | カメラが周回する速さ |
+
+#### LAYOUT：列
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `COLUMNS` | 1 | 階段を横に並べる数（奇数） |
+| `COL_SPACING` | 600 | 列の間隔 |
+| `FLOW` | ALTERNATE | 列ごとの進む向き（`SAME` / `ALTERNATE` / `OUTER_REVERSE`） |
+| `ORBIT_FLOW` | SAME | 列ごとのカメラの周回の向き |
+| `ANIM_PHASE` | 60 | アニメーションの、隣の列との位相のずれ（度） |
+
+`COLUMNS` が 1 のときは、下の4項目は表示されない。
 
 ### LOOK（見た目）
 
-| セクション | 主な項目 |
-|---|---|
-| SHADING | 塗り方（下の表）。`STROKE` `STROKE_WEIGHT` で箱の輪郭線（`HANDWRITING` で手描き風。`HAND_WOBBLE` でぶれの大きさ、`HAND_BOIL` で線が震える速さ）、粒で描く塗り方では `DITHER`（`RANDOM` / `BAYER` / `HALFTONE` / `HATCH`）と模様の大きさ |
-| COLOR | 2色 `COLOR_A`（紙）`COLOR_B`（インク）、`INVERT`、中間色の計算方法 `MIX`。TRI では3色目 `COLOR_C` とボールの色。`BG_SEPARATE` で背景色を別に決められる |
-| LIGHT | 光源 `CAMERA`（カメラの少し上から）/ `FIXED`（太陽が円周軌道を回る）。階段の影の濃さ `SHADOW_TONE` |
-| POST | 描き終えた画面を中央で折り返す `MIRROR_X` / `MIRROR_Y`（`MIRROR_U` / `MIRROR_V` で折り返す元の位置）。`PIXELATE` で画面を大きな四角い画素に置き換える（`PIXEL_SIZE` で画素の大きさ、`PIXEL_INK` で細い線をどれだけ拾うか） |
+#### SHADING：塗り方
 
 | SHADING | 塗り方 |
 |---|---|
@@ -53,11 +99,55 @@ python3 -m http.server 8765
 | POSTER | 面の向きと高さで決まるグラフィックなグラデーションを粒で描く |
 | TRI | 3色のベタ塗り（上面・x 向きの側面・それ以外）。ボールはセル調の2色 |
 
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `STROKE` | オン | 箱の輪郭線（NONE は常に描く。TRI は描かない） |
+| `STROKE_WEIGHT` | 1 | 輪郭線の太さ（白いボールの輪郭線も同じ） |
+| `HANDWRITING` | オフ | 輪郭線を手描き風にする（2本の線が重なり、角ではみ出したり届かなかったりする） |
+| `HAND_WOBBLE` | 2 | 線のぶれの大きさ（画面ピクセル） |
+| `HAND_BOIL` | 4 | 1秒に何回線を描き直すか（線が震える。0 で止める） |
+| `DITHER` | RANDOM | 粒で描く塗り方の模様（`RANDOM` / `BAYER` / `HALFTONE` / `HATCH`） |
+| `DITHER_SCREEN` | オフ | 模様を画面に貼りつける（オフなら面に貼りつく） |
+| `GRAIN_SIZE` | 1 | RANDOM / BAYER の粒の大きさ |
+| `DOT_PITCH` | 8 | HALFTONE の網点の間隔 |
+| `HATCH_PITCH` | 6 | HATCH の線の間隔 |
+
+#### COLOR：色
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `COLOR_A` `COLOR_B` | #ffffff / #000000 | 紙（背景・明るい面）とインク（暗い面・線） |
+| `INVERT` | オフ | 紙とインクを入れ替える |
+| `MIX` | OKLAB | 中間色の計算方法（`OKLAB` / `SRGB` / `LINEAR`） |
+| `COLOR_C` | #ee2b2b | TRI の3色目（上面） |
+| `BALL_A` `BALL_B` | C・B / A・B | TRI のボールの色（光の当たる側・影側を A / B / C から選ぶ） |
+| `BG_SEPARATE` | オフ | 背景色を紙の色と別にする |
+| `BG_COLOR` | #eeeeee | 別にしたときの背景色 |
+
+#### LIGHT：光と影
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `LIGHT` | CAMERA | `CAMERA`（カメラの少し上から）/ `FIXED`（太陽が円周軌道を回る） |
+| `LIGHT_UP` | 25 | CAMERA：光源をカメラから何度上に置くか |
+| `SUN_SPEED` `SUN_RADIUS` | 0.3 / 600 | FIXED：太陽が回る速さと軌道の半径 |
+| `SHADOW_TONE` | 0.5 | 階段の影の濃さ（FLAT では中間色の混ぜ具合） |
+
+#### POST：描き終えた画面にかける処理
+
+| 項目 | 初期値 | 内容 |
+|---|---|---|
+| `MIRROR_X` `MIRROR_Y` | オフ | 画面の中央で左右・上下に折り返す |
+| `MIRROR_U` `MIRROR_V` | 0.5 | 中央に持ってくる元の画面の位置 |
+| `PIXELATE` | オフ | 画面全体（ボールも）を大きな四角い画素に置き換える。色はパレットの色だけ |
+| `PIXEL_SIZE` | 4 | 画素1つの大きさ（画面ピクセル） |
+| `PIXEL_INK` | 0.4 | 細い線をどれだけ拾うか（小さいほど細い線も残る） |
+
 ## ファイル構成
 
 | ファイル | 役割 |
 |---|---|
 | `index.html` | p5.js を CDN から読み込み、各スクリプトを実行 |
-| `sketch.js` | 形と動き（階段・ボール・裏の世界・粒・カメラ・パネル）。階段の形は `buildGeometry` でキャッシュ |
-| `shading.js` | 塗り方と影（シェーダー）、画面の折り返し。`SHADINGS` に項目を足すと塗り方を追加できる |
+| `sketch.js` | 形と動き（階段・ボール・裏の世界・粒・足跡・カメラ・パネル）と手描きの線。階段の形は `buildGeometry` でキャッシュ |
+| `shading.js` | 塗り方と影（シェーダー）、足跡の描画、ポストプロセス（折り返し・ピクセル化）。`SHADINGS` に項目を足すと塗り方を追加できる |
 | `style.css` | キャンバスを全画面に表示 |
