@@ -7,3 +7,6 @@ p5.sound.min.js
 
 # エディタ・ツールのローカル設定
 .claude/
+
+# 書き出した動画（tools/record.mjs）
+out/

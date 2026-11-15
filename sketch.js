@@ -16,6 +16,10 @@ const SUN_HEIGHT = 1000;      // LIGHT=FIXED：太陽の高さ（円周軌道の
 // 高さを固定しているので、SUN_RADIUS が大きいほど太陽は低く（斜めから）、小さいほど真上に近くなる
 
 const sliders = [];           // RESET用：スライダーとデフォルト値の一覧
+const controls = {};          // ラベル → パネルの部品（record.js が台本から操作する）
+
+// 1フレームの経過時間（ミリ秒）。動画の書き出し中（record.js）は 60fps 固定
+function dtMs() { return window.REC_FRAME_MS ?? deltaTime; }
 
 let sBounce, sParticles, sParticleSize;
 let topBallsCheck, underBallsCheck;
@@ -303,6 +307,8 @@ function setup() {
   pauseBtn = createButton('PAUSE').parent(btnRow);
   styleButton(pauseBtn);
   pauseBtn.mousePressed(togglePause);
+
+  if (typeof startDay === 'function') startDay();   // record.js：?day=N なら、その日の状態から台本を始める
 }
 
 // PLAY / PAUSE を切り替える（PAUSE ボタンと SPACE キーから呼ぶ）
@@ -344,6 +350,7 @@ function makeColor(parent, label, value) {
   picker.style('width', '60px');
   picker.style('height', '24px');
   picker.row = row;   // 行ごと表示・非表示を切り替えるため
+  controls[label] = picker;
   return picker;
 }
 
@@ -377,6 +384,7 @@ function makeCheck(parent, label, checked) {
   const cb = createCheckbox('', checked).parent(row);
   cb.elt.querySelector('input').style.transform = 'scale(1.3)';
   cb.row = row;   // 行ごと表示・非表示を切り替えるため
+  controls[label] = cb;
   return cb;
 }
 
@@ -393,6 +401,7 @@ function makeSelect(parent, label, options, selected) {
   for (const o of options) sel.option(o);
   sel.selected(selected);
   sel.row = row;   // 行ごと表示・非表示を切り替えるため
+  controls[label] = sel;
   return sel;
 }
 
@@ -415,6 +424,7 @@ function makeSlider(parent, label, min, max, val, stp = 1) {
   s.input(() => v.html(s.value()));
   sliders.push({ s, v, val });
   s.row = row;   // 行ごと表示・非表示を切り替えるため
+  controls[label] = s;
   return s;
 }
 
@@ -507,7 +517,8 @@ function draw() {
   const pixOn = beginPixelate(pixCheck.checked());
   background(bgRGB[0] * 255, bgRGB[1] * 255, bgRGB[2] * 255);
 
-  if (!paused) animTime += deltaTime / 1000;
+  if (typeof recTick === 'function') recTick(dtMs());   // record.js：Day の台本を進める
+  if (!paused) animTime += dtMs() / 1000;
 
   // 形状パラメータ（中央の列。列ごとの形は shapeFor(c) で作る）
   const p = shapeFor(0);
@@ -622,7 +633,8 @@ function draw() {
 
     drawColumn(p, st, c, colBase, shading, limitY, () => {
       // この列の位置へ投影範囲をずらす（影の下準備のあとに設定し直す）
-      const dx = c * spacing;
+      // REC_VIEW_SHIFT：動画の書き出し時に、パネルの右の空いた所へ絵全体を寄せる（画面ピクセル）
+      const dx = c * spacing + (window.REC_VIEW_SHIFT ?? 0) / zoom;
       if (persp) {
         // 視錐台を横にずらす（注視点の深さで dx ずれるよう、near の面での量に直す）
         const th = near * tan(fov / 2), tw = th * width / height, sx = dx * near / camDist;
@@ -1001,7 +1013,7 @@ function spawnParticles(st, ball, p, base) {
 // 粒を1フレームぶん動かす：重力で落ち、足元の面で小さく跳ね、小さくなって消える
 function updateParticles(st, p) {
   if (paused) return;
-  const dt = min(deltaTime / (1000 / 60), 3);   // 60fps のときの1フレームを1とする
+  const dt = min(dtMs() / (1000 / 60), 3);   // 60fps のときの1フレームを1とする
   const gy = p.R * 0.012;
   for (const pt of st.particles) {
     const g = pt.g || 1;
@@ -1068,7 +1080,7 @@ const FOOT_CHUNK_SEC = 0.1;
 const FOOT_MERGE = 10;
 function updateFootprints(st, base) {
   if (!st.markChunks) { st.markChunks = []; st.markClock = 0; st.chunkStart = 0; }
-  if (!paused) st.markClock += min(deltaTime, 100) / 1000;
+  if (!paused) st.markClock += min(dtMs(), 100) / 1000;
   // 一番新しい跡まで消えたまとまりを捨てる
   st.markChunks = st.markChunks.filter(ch => {
     const alive = st.markClock - ch.tEnd < base.trailLife;
