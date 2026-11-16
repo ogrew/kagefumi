@@ -51,6 +51,7 @@ let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
 let strokeCheck, sStrokeWeight;
 let handCheck, sHandWobble, sHandBoil;
+let oilTypeSel, sPaintSize, sPaintOutline, sPaintWobble, sPaintRedraw;   // 油絵風（OIL）の種類と絵の具
 let colorCPicker, ballASel, ballBSel;
 let bgSepCheck, bgPicker;   // 背景色を COLOR_A / B とは別に決める
 let pixCheck, sPixSize, sPixInk;   // POST：大きな四角い画素に置き換える
@@ -174,6 +175,12 @@ function setup() {
   sGrainSize   = makeSlider(panel, 'GRAIN_SIZE', 1, 6, 1);           // RANDOM / BAYER の1マスの大きさ（画面ピクセル）
   sDotPitch    = makeSlider(panel, 'DOT_PITCH', 5, 20, 8);           // HALFTONE の網点の間隔（画面ピクセル）
   sHatchPitch  = makeSlider(panel, 'HATCH_PITCH', 3, 16, 6);         // HATCH の線の間隔（画面ピクセル）
+  // 油絵風（OIL）の種類と絵の具
+  oilTypeSel    = makeSelect(panel, 'OIL_TYPE', SHADINGS.OIL.oilTypes, SHADINGS.OIL.oilTypes[0]);   // KNIFE / STREAK / DAB
+  sPaintSize    = makeSlider(panel, 'PAINT_SIZE', 2, 12, 5, 1);       // 筆の大きさ（画面ピクセル）
+  sPaintOutline = makeSlider(panel, 'PAINT_OUTLINE', 0, 16, 6, 0.5);  // 縁取りの太さ（画面ピクセル。0 で描かない）
+  sPaintWobble  = makeSlider(panel, 'PAINT_WOBBLE', 0, 7, 1, 0.5);    // 輪郭のゆれ（画面ピクセル）
+  sPaintRedraw  = makeSlider(panel, 'PAINT_REDRAW', 0, 12, 4, 1);     // タッチを描き直す回数（1秒あたり。0 で止める）
 
   // シェーディングとディザの種類に関係する項目だけを表示する
   const updateDitherRows = () => {
@@ -194,6 +201,8 @@ function setup() {
     show(sHandWobble, lines && handCheck.checked());
     show(sHandBoil, lines && handCheck.checked());
     show(sShadowTone, resolveShading(shadingSel.value()).shadow !== false);
+    const paint = !!resolveShading(shadingSel.value()).paint;
+    for (const el of [oilTypeSel, sPaintSize, sPaintOutline, sPaintWobble, sPaintRedraw]) show(el, paint);
   };
 
   // 2色：A＝背景・光の当たる面（紙）、B＝影・暗い面（インク）。INVERT で役割を入れ替える
@@ -302,6 +311,7 @@ function setup() {
     invertCheck.checked(false);
     mixSel.selected('OKLAB');
     ditherSel.selected('RANDOM');
+    oilTypeSel.selected(SHADINGS.OIL.oilTypes[0]);
     ditherScreen.checked(false);
     strokeCheck.checked(true);
     handCheck.checked(false);
@@ -645,6 +655,14 @@ function draw() {
       uBallPaperLit: pal[ballBSel.lit.value()], uBallPaperDark: pal[ballBSel.dark.value()],
     };
   }
+  // 油絵風（OIL）：筆の大きさと、タッチの描き直しの番号（面の塗りとポスト処理で共通）
+  const paintSeed = sPaintRedraw.value() > 0 ? floor(animTime * sPaintRedraw.value()) % 64 : 0;
+  if (resolveShading(shading).paint) {
+    base.uniforms = {
+      ...base.uniforms, uPaintPx: sPaintSize.value() * pixelDensity(), uPaintSeed: paintSeed,
+      uOilStreak: oilTypeSel.value() === 'STREAK' ? 1 : 0,
+    };
+  }
   if (lightSel.value() === 'FIXED') {
     // 太陽：高さ SUN_HEIGHT の水平な円周上を、SUN_SPEED（度/フレーム）で回る
     // （yは下向きなので、上は -y）
@@ -723,6 +741,12 @@ function draw() {
       camera(eye.x, eye.y, eye.z, 0, 0, 0, up.x, up.y, up.z);
     }, a, e);
   }
+
+  // 油絵風（OIL）：描き終えた画面に絵の具のフィルタをかける
+  applyPaint(resolveShading(shading), {
+    type: oilTypeSel.value(), brush: sPaintSize.value(), outline: sPaintOutline.value(), wobble: sPaintWobble.value(),
+    seed: paintSeed, bg: bgRGB,
+  });
 
   // POST：画面の中央で折り返す
   applyMirror(mirrorXCheck.checked(), mirrorYCheck.checked(),
