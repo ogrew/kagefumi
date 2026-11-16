@@ -36,11 +36,11 @@ const DAYS = {
   ]},
   // 最初から手描きの線。塗り方が 2.5 秒ごとに切り替わり、最後の TRI は長めに見せる。
   // 粒・網点・線の大きさは、切り替えと同時に値だけ入れる。
-  // SPEED は 1 秒と 11 秒で、3 秒かけてサクッと向きを変える（0.8 → -0.8 → 0.8）。ZOOM は 20 秒かけて 1.0 → 1.4
+  // BALL_SPEED と CAM_SPEED は 1 秒と 11 秒で、3 秒かけてサクッと向きを変える（0.8 → -0.8 → 0.8）。ZOOM は 20 秒かけて 1.0 → 1.4
   3: { title: '描き方', events: [
     [0, 'HANDWRITING', true],
     [0, 'ZOOM', 1.4, 20, 'linear'],
-    [1, 'SPEED', -0.8, 3, 'out'], [11, 'SPEED', 0.8, 3, 'out'],
+    [1, 'BALL_SPEED', -0.8, 3, 'out'], [1, 'CAM_SPEED', -0.8, 3, 'out'], [11, 'BALL_SPEED', 0.8, 3, 'out'], [11, 'CAM_SPEED', 0.8, 3, 'out'],
     [1.5, 'SHADING', 'GRAIN'],
     [4, 'DITHER', 'BAYER'], [4, 'GRAIN_SIZE', 4],
     [6.5, 'DITHER', 'HALFTONE'], [6.5, 'DOT_PITCH', 9],
@@ -53,7 +53,7 @@ const DAYS = {
   4: { title: '動き', events: [
     [0, 'SHADING', 'GRAIN'], [0, 'DITHER', 'BAYER'], [0, 'GRAIN_SIZE', 3],
     [0, 'LIGHT', 'FIXED'], [0, 'SHADOW_TONE', 0.6], [0, 'ZOOM', 1.4],
-    [0, 'PROJECTION', 'PERSPECTIVE'], [0, 'SPEED', -1],
+    [0, 'PROJECTION', 'PERSPECTIVE'], [0, 'BALL_SPEED', -1], [0, 'CAM_SPEED', -1],
     [0, 'W', 200], [0, 'D', 180], [0, 'GAP', 180],
     [2, 'BOUNCE', 1, 1.5],
     [5, 'PARTICLES', 8],
@@ -69,7 +69,7 @@ const DAYS = {
   // 最初のコマで見た目と形を決める（ORTHO、TRI のパステル配色、軽く跳ねる）。
   // 階段の長さと踊り場の間隔が呼吸し始め、段がボールの近くにだけ現れ、その残り方が変わり、呼吸が大きくなる
   5: { title: '階段が生きている', events: [
-    [0, 'PROJECTION', 'ORTHO'], [0, 'ZOOM', 1.2], [0, 'SPEED', 0.8], [0, 'BOUNCE', 0.5],
+    [0, 'PROJECTION', 'ORTHO'], [0, 'ZOOM', 1.2], [0, 'BALL_SPEED', 0.8], [0, 'CAM_SPEED', 0.8], [0, 'BOUNCE', 0.5],
     [0, 'W', 120], [0, 'D', 260],
     [0, 'SHADING', 'TRI'],
     [0, 'COLOR_A', '#e5485f'], [0, 'COLOR_B', '#54b0ce'], [0, 'COLOR_C', '#ecee58'],
@@ -122,7 +122,7 @@ const DAYS = {
     [0, 'SHAPE', 'OVAL'],
     [0, 'W', 120], [0, 'D', 280], [0, 'H', 30], [0, 'V_GAP', 120], [0, 'V_GAP_ANIM', false],
     [0, 'STEPS', 8], [0, 'GAP', 180], [0, 'GAP_ANIM', false], [0, 'STEP_SQUASH', false], [0, 'STEP_FADE', 1],
-    [0, 'BALL_R_RATIO', 0.6], [0, 'SPEED', -0.8], [0, 'STOP_PROB', 0.3], [0, 'STOP_LEN', 0.2], [0, 'FALL_PROB', 0.2],
+    [0, 'BALL_R_RATIO', 0.6], [0, 'BALL_SPEED', -0.8], [0, 'CAM_SPEED', -0.8], [0, 'STOP_PROB', 0.3], [0, 'STOP_LEN', 0.2], [0, 'FALL_PROB', 0.2],
     [0, 'TOP_BALLS', true], [0, 'UNDER_BALLS', false],
     [0, 'BOUNCE', 1], [0, 'PARTICLES', 6], [0, 'PARTICLE_SIZE', 0.25], [0, 'FOOTPRINTS', false],
     [0, 'ELEV', 25], [0, 'AZIM0', 45], [0, 'ROLL', 0], [0, 'PROJECTION', 'ORTHO'], [0, 'ZOOM', 1.15], [0, 'ORBIT_SPEED', 0.2],
@@ -140,13 +140,13 @@ const DAYS = {
   // Day 9：角ばったらせん（SQUARE）を TRI とピクセルで。踊り場の間隔と階段の長さはずっと呼吸する。
   // 真上（ELEV 89）から始めて、何が起きているか分からないまま数秒見せ、ゆっくり 30 まで下げて正体を見せる。
   // そのあと踊り場とボールが膨らみ、後半でピクセルになり、また縮む。
-  // SPEED はサクッと反転して上りと下りを行き来する
+  // BALL_SPEED と CAM_SPEED はサクッと反転して上りと下りを行き来する
   9: { title: '四角', events: [
     [0, 'SHAPE', 'SQUARE'],
     [0, 'H', 18], [0, 'LANDING_SIZE', 90],
     [0, 'V_GAP_MIN', 60], [0, 'V_GAP_MAX', 120], [0, 'V_GAP_SPEED', 0.27], [0, 'V_GAP_ANIM', true],
     [0, 'GAP_MIN', 80], [0, 'GAP_MAX', 160], [0, 'GAP_SPEED', 0.37], [0, 'GAP_ANIM', true],
-    [0, 'BALL_R_RATIO', 0.35], [0, 'SPEED', -0.8], [0, 'PARTICLES', 5], [0, 'UNDER_BALLS', true],
+    [0, 'BALL_R_RATIO', 0.35], [0, 'BALL_SPEED', -0.8], [0, 'CAM_SPEED', -0.8], [0, 'PARTICLES', 5], [0, 'UNDER_BALLS', true],
     [0, 'ELEV', 89], [0, 'ZOOM', 1.5],
     [0, 'SHADING', 'TRI'],
     [0, 'COLOR_A', '#66c08d'], [0, 'COLOR_B', '#f0b55e'], [0, 'COLOR_C', '#e4fe5f'],
@@ -154,10 +154,10 @@ const DAYS = {
     [0, 'PIXELATE', false], [0, 'PIXEL_SIZE', 3],
     [3, 'ELEV', 30, 3.5, 'smooth'],
     [7, 'LANDING_SIZE', 140, 1.5],
-    [8.5, 'SPEED', 0.8, 1.5, 'out'],
+    [8.5, 'BALL_SPEED', 0.8, 1.5, 'out'], [8.5, 'CAM_SPEED', 0.8, 1.5, 'out'],
     [9.5, 'BALL_R_RATIO', 0.75, 1.5],
     [12, 'PIXELATE', true],
-    [13.5, 'SPEED', -0.8, 1.5, 'out'],
+    [13.5, 'BALL_SPEED', -0.8, 1.5, 'out'], [13.5, 'CAM_SPEED', -0.8, 1.5, 'out'],
     [15, 'LANDING_SIZE', 90, 1.5],
     [16.5, 'BALL_R_RATIO', 0.35, 1.5],
   ]},

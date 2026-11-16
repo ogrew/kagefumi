@@ -43,6 +43,11 @@ function initShare() {
       setCtl(label, +raw);
     }
   }
+  // 古い URL の SPEED（ボールとカメラが同じ速さだった頃）は、BALL_SPEED と CAM_SPEED の両方に入れる
+  const oldSpeed = q.get('SPEED');
+  if (oldSpeed !== null && oldSpeed !== '' && Number.isFinite(+oldSpeed)) {
+    for (const label of ['BALL_SPEED', 'CAM_SPEED']) if (!q.has(label)) setCtl(label, +oldSpeed);
+  }
   for (const [key, sel] of [['BALL_A', ballASel], ['BALL_B', ballBSel]]) {
     const v = q.get(key);
     if (v && /^[ABC]{2}$/.test(v)) { sel.lit.selected(v[0]); sel.dark.selected(v[1]); }
