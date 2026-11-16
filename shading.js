@@ -304,18 +304,25 @@ const SHADINGS = {
   FLAT: {
     stair: `
       uniform vec2 uLevels;  // 光への向き（0〜1）の境目：x 以下は黒、y より上は白、その間は中間色
+      uniform float uFade;   // 境目の前後でフェードする幅（光への向きの値。0 で瞬時に切り替え）
+      // 境目 e をまたぐと 0 → 1。光源が動くと面の向きの値が少しずつ変わるので、
+      // 境目の前後 uFade の幅で混ぜると、色が短いフェードで切り替わって見える
+      float cross1(float e, float lam) {
+        return uFade > 0.0 ? smoothstep(e - uFade, e + uFade, lam) : step(e, lam);
+      }
       void main() {
         float lam = lambert();
-        float level = lam > uLevels.y ? 2.0 : (lam > uLevels.x ? 1.0 : 0.0);
+        // 段階を連続値に：0 = 黒、1 = 中間色、2 = 白
+        float level = cross1(uLevels.x, lam) + cross1(uLevels.y, lam);
         vec2 sh = shadows();
         if (sh.y < 0.5) level = min(level, 1.0);  // 階段の影
         if (sh.x < 0.5) level = 0.0;              // ボールの影
-        vec3 col = level > 1.5 ? uPaper : (level > 0.5 ? uMid : uInk);
+        vec3 col = level > 1.0 ? mix(uMid, uPaper, level - 1.0) : mix(uInk, uMid, level);
         gl_FragColor = vec4(col, 1.0);
       }
     `,
     stroke: true,
-    params: { uPaper: [1, 1, 1], uInk: [0, 0, 0], uLevels: [0.15, 0.55], uShadowBlur: 0 },
+    params: { uPaper: [1, 1, 1], uInk: [0, 0, 0], uLevels: [0.15, 0.55], uFade: 0.05, uShadowBlur: 0 },
   },
 
   // 粒子のグラデーション。面の明るさ＝光の当たり具合×影（＋側面の縦グラデーション）
@@ -614,6 +621,7 @@ function setCommonUniforms(sh, s, ctx) {
   if (ctx.grainSize) sh.setUniform('uGrain', ctx.grainSize);
   sh.setUniform('uDotPitch', ctx.dotPitch || 12);
   sh.setUniform('uHatchPitch', ctx.hatchPitch || 6);
+  if (ctx.fade !== undefined) sh.setUniform('uFade', ctx.fade);   // FLAT のフェード幅（パネルの FADE）
   // 形とカメラの情報（POSTER が使う）
   if (ctx.step) sh.setUniform('uStep', ctx.step);
   if (ctx.H) sh.setUniform('uH', ctx.H);
