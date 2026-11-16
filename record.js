@@ -137,6 +137,30 @@ const DAYS = {
     [10.5, 'STEP_SQUASH', true],
     [15.5, 'STEP_SQUASH', false],
   ]},
+  // Day 9：角ばったらせん（SQUARE）を TRI とピクセルで。踊り場の間隔と階段の長さはずっと呼吸する。
+  // 真上（ELEV 89）から始めて、何が起きているか分からないまま数秒見せ、ゆっくり 30 まで下げて正体を見せる。
+  // そのあと踊り場とボールが膨らみ、後半でピクセルになり、また縮む。
+  // SPEED はサクッと反転して上りと下りを行き来する
+  9: { title: '四角', events: [
+    [0, 'SHAPE', 'SQUARE'],
+    [0, 'H', 18], [0, 'LANDING_SIZE', 90],
+    [0, 'V_GAP_MIN', 60], [0, 'V_GAP_MAX', 120], [0, 'V_GAP_SPEED', 0.27], [0, 'V_GAP_ANIM', true],
+    [0, 'GAP_MIN', 80], [0, 'GAP_MAX', 160], [0, 'GAP_SPEED', 0.37], [0, 'GAP_ANIM', true],
+    [0, 'BALL_R_RATIO', 0.35], [0, 'SPEED', -0.8], [0, 'PARTICLES', 5], [0, 'UNDER_BALLS', true],
+    [0, 'ELEV', 89], [0, 'ZOOM', 1.5],
+    [0, 'SHADING', 'TRI'],
+    [0, 'COLOR_A', '#66c08d'], [0, 'COLOR_B', '#f0b55e'], [0, 'COLOR_C', '#e4fe5f'],
+    [0, 'BG_SEPARATE', true], [0, 'BG_COLOR', '#6cb4d3'],
+    [0, 'PIXELATE', false], [0, 'PIXEL_SIZE', 3],
+    [3, 'ELEV', 30, 3.5, 'smooth'],
+    [7, 'LANDING_SIZE', 140, 1.5],
+    [8.5, 'SPEED', 0.8, 1.5, 'out'],
+    [9.5, 'BALL_R_RATIO', 0.75, 1.5],
+    [12, 'PIXELATE', true],
+    [13.5, 'SPEED', -0.8, 1.5, 'out'],
+    [15, 'LANDING_SIZE', 90, 1.5],
+    [16.5, 'BALL_R_RATIO', 0.35, 1.5],
+  ]},
 };
 
 let recDay = 0;          // 0 なら台本なし（ふつうの表示）
