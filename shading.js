@@ -760,65 +760,113 @@ function shadeBalls(name, ctx) {
 }
 
 // ---------------------------------------------------------------------
-// ボールの残像（GHOSTS）：過去の位置に描く球を、規則的な点のパターン（Bayer）で間引いて薄く見せる。
-// 中間の色は出さない（足跡と同じ考え方）。階段は描き直さないので、階段には残像が出ない。
-// 同じ3D空間に描くので、階段の向こうに回った残像はちゃんと階段に隠れる。影は落とさない
+// ボールの残像（GHOST_LEN）：ボールが通った道に沿った、つながった帯（チューブ）。
+// 後ろへいくほど細くなり、最後は点になる。色は本物のボールと同じ塗りで、中間の色は出さない。
+// 階段は描き直さないので、階段には残像が出ない。同じ3D空間に描くので、
+// 階段の向こうに回った帯は階段に隠れる。影は落とさない。
+//
+// 形は「輪 GHOST_RINGS 個 × 周 GHOST_SIDES 個」の決まった網（tubeGeo）を1つだけ作っておき、
+// 頂点シェーダー（TUBE_VERT）が、帯ごとに渡された輪の位置・半径・向きに合わせて曲げる。
+// 帯1本を1回で描けるので、球を並べるより桁違いに軽い
 // ---------------------------------------------------------------------
-// 間引くしきい値：塗りのディザ（bayer8(画面座標)）と同じ模様だと、残る点がいつも同じ明るさの点になり、
-// 黒いボールの残像が白く抜けたりする。縦横を入れ替えてずらし、塗りの模様と重ならないようにする
-const GHOST_CUT = `
-uniform float uGhostFade;   // 残す点の割合（1 = 全部残す、0 = 全部消す）
-bool ghostCut() {
-  vec2 c = floor(gl_FragCoord.xy / max(uGrain, 1.0));
-  return bayer8(c.yx + vec2(5.0, 2.0)) + 0.5 / 64.0 > uGhostFade;
+const GHOST_RINGS = 32;
+const GHOST_SIDES = 16;
+const TUBE_VERT = `
+precision highp float;
+attribute vec3 aPosition;   // x：輪の番号、y：周の番号
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform vec4 uRingP[${GHOST_RINGS}];   // 輪の中心（階段ローカル座標）と半径
+uniform vec4 uRingN[${GHOST_RINGS}];   // 輪の面の向き1（道に垂直）と、半径の変わり方（道の長さあたり）
+uniform vec3 uRingB[${GHOST_RINGS}];   // 輪の面の向き2（道に垂直）。道の向きは cross(N, B)
+varying vec3 vNormal;
+varying vec3 vPos;
+varying float vVert;
+varying float vBorn;
+varying float vRad;   // その所の帯の半径（NONE / FLAT の輪郭線の太さ用）
+void main() {
+  int i = int(aPosition.x + 0.5);
+  float a = aPosition.y * ${(2 * Math.PI / GHOST_SIDES).toFixed(8)};
+  vec4 P = uRingP[i];
+  vec4 N = uRingN[i];
+  vec3 B = uRingB[i];
+  vec3 radial = cos(a) * N.xyz + sin(a) * B;
+  vec3 T = cross(N.xyz, B);
+  // 細くなっていく帯の表面は、細くなる向きへ少し傾く
+  vNormal = normalize(radial - T * N.w);
+  vPos = P.xyz + P.w * radial;
+  vRad = P.w;
+  vVert = 0.0;
+  vBorn = 0.0;
+  gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(vPos, 1.0);
 }
 `;
-// シェーディングのボール用の塗り（s.ball）をそのまま使い、先頭で間引く
-// （#define main で名前を変えると、ドライバによっては main がないと言われるので、文字列で置き換える）
-const ghostWrap = (ball) => ball.replace(/void\s+main\s*\(\s*\)/, 'void ghostBallMain()') + GHOST_CUT +
-  'void main() { if (ghostCut()) discard; ghostBallMain(); }\n';
-// ボール用の塗りがないシェーディング（NONE / FLAT）：通常描画のボールと同じベタ塗り＋輪郭線
-const GHOST_FLAT = GHOST_CUT + `
+let tubeGeo = null;
+function getTubeGeo() {
+  if (tubeGeo) return tubeGeo;
+  const geo = new p5.Geometry(1, 1);
+  geo.gid = 'ghost-tube';
+  for (let i = 0; i < GHOST_RINGS; i++) {
+    for (let j = 0; j < GHOST_SIDES; j++) {
+      geo.vertices.push(createVector(i, j, 0));
+      geo.vertexNormals.push(createVector(0, 0, 1));   // 使わない（向きはシェーダーで計算する）
+      geo.uvs.push(0, 0);
+      geo.vertexColors.push(0, 0, 0, 1);
+    }
+  }
+  for (let i = 0; i < GHOST_RINGS - 1; i++) {
+    for (let j = 0; j < GHOST_SIDES; j++) {
+      const a = i * GHOST_SIDES + j, b = i * GHOST_SIDES + (j + 1) % GHOST_SIDES;
+      geo.faces.push([a, b, a + GHOST_SIDES], [b, b + GHOST_SIDES, a + GHOST_SIDES]);
+    }
+  }
+  return (tubeGeo = geo);
+}
+
+// ボール用の塗りがないシェーディング（NONE / FLAT）：通常描画のボールと同じベタ塗り＋輪郭線。
+// 輪郭線は「視線と垂直に近い所」（帯のふち）を、線の太さぶんだけ塗る
+const GHOST_FLAT = `
+varying float vRad;
 uniform vec3 uGhostCol;    // 塗りの色
 uniform vec3 uGhostLine;   // 輪郭線の色
-uniform float uRimSin;     // 輪郭線になる所：視線と垂直な度合い（sin）がこれより大きい所。2 なら線なし
+uniform float uLineW;      // 輪郭線の太さ（画面ピクセル。0 なら線なし）
 uniform vec3 uToCam;       // カメラへ向かう向き（階段ローカル座標）
 void main() {
-  if (ghostCut()) discard;
   float nv = dot(normalize(vNormal), uToCam);
   float s = sqrt(max(0.0, 1.0 - nv * nv));
-  gl_FragColor = vec4(s > uRimSin ? uGhostLine : uGhostCol, 1.0);
+  bool rim = uLineW > 0.0 && s > 1.0 - uLineW / max(vRad * uZoom, 1e-3);
+  gl_FragColor = vec4(rim ? uGhostLine : uGhostCol, 1.0);
 }
 `;
 
-// ghosts：[{ x, y, z, r, ink, fade }]
-function drawGhosts(name, ctx, ghosts) {
-  if (!ghosts.length) return;
+// trails：[{ P, N, B, ink }]（P・N は GHOST_RINGS × 4、B は GHOST_RINGS × 3 の数の並び）
+function drawGhosts(name, ctx, trails) {
+  if (!trails.length) return;
   const s = resolveShading(name);
-  const sh = s.ball ? getShader(s.key + ':ghost', SHADE_VERT, FRAG_HEAD + ghostWrap(s.ball))
-                    : getShader('ghost:flat', SHADE_VERT, FRAG_HEAD + GHOST_FLAT);
+  // ボール用の塗りがあれば、本物のボールと同じ塗り（頂点シェーダーだけ帯用）
+  const sh = s.ball ? getShader(s.key + ':ghost', TUBE_VERT, FRAG_HEAD + s.ball)
+                    : getShader('ghost:flat', TUBE_VERT, FRAG_HEAD + GHOST_FLAT);
   shader(sh);
   setCommonUniforms(sh, s, ctx);
   if (s.ball) sh.setUniform('uForceScreen', 1);   // shadeBalls と同じ
-  // 1つずつ p5 の変換を使わずに描く（位置は uOffset と uObjScale だけで決める）
-  sh.setUniform('uObjDirect', 1);
-  noStroke();
-  const lineW = ctx.strokeWeight || 1;
-  for (const g of ghosts) {
-    sh.setUniform('uGhostFade', g.fade);
-    sh.setUniform('uOffset', [g.x, g.y, g.z]);
-    sh.setUniform('uObjScale', g.r);
-    if (s.ball) sh.setUniform('uIsInk', g.ink ? 1 : 0);
-    else {
-      sh.setUniform('uGhostCol', g.ink ? ctx.ink : ctx.paper);
-      sh.setUniform('uGhostLine', ctx.ink);
-      // 紙のボールだけ輪郭線（drawBall と同じ）。線の太さ（画面ピクセル）を半径の割合に直す
-      const outline = ctx.stroke && !g.ink;
-      sh.setUniform('uRimSin', outline ? 1 - lineW / max(g.r * ctx.zoom, 1e-3) : 2);
-    }
-    sphere(1, 24, 16);
+  else {
+    sh.setUniform('uGhostLine', ctx.ink);
   }
-  sh.setUniform('uObjDirect', 0);
+  noStroke();
+  const geo = getTubeGeo();
+  // 紙のボールだけ輪郭線（drawBall と同じ）。uZoom は実ピクセルなので、線の太さも実ピクセルに直す
+  const lineW = (ctx.strokeWeight || 1) * pixelDensity();
+  for (const t of trails) {
+    sh.setUniform('uRingP', t.P);
+    sh.setUniform('uRingN', t.N);
+    sh.setUniform('uRingB', t.B);
+    if (s.ball) sh.setUniform('uIsInk', t.ink ? 1 : 0);
+    else {
+      sh.setUniform('uGhostCol', t.ink ? ctx.ink : ctx.paper);
+      sh.setUniform('uLineW', ctx.stroke && !t.ink ? lineW : 0);
+    }
+    model(geo);
+  }
   resetShader();
   stroke(inkColor255(ctx));
 }

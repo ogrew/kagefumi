@@ -33,7 +33,7 @@ function dtMs() { return window.REC_FRAME_MS ?? deltaTime; }
 
 let sBounce, sParticles, sParticleSize, sFallProb;
 let topBallsCheck, underBallsCheck;
-let sGhosts, sGhostGap, sGhostFade;   // ボールの残像（GHOSTS）
+let sGhostLen, sGhostWidth;   // ボールの残像（GHOST_LEN）
 let footCheck, sTrailLife, sTrailSize;   // 足跡（FOOTPRINTS）   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let sLandSize, sStairWidth;   // SQUARE だけの大きさ：角の踊り場の一辺と、階段の幅（踊り場に対する割合）
@@ -125,11 +125,10 @@ function setup() {
   sParticleSize = makeSlider(panel, 'PARTICLE_SIZE', 0.05, 0.5, 0.25, 0.01);  // 粒の大きさ（ボールの半径に対する割合）
   sParticles.elt.addEventListener('input', updateParticleRow);
   updateParticleRow();
-  // 残像：ボールの過去の位置に、点を間引いて薄くした球を描く（階段には残らない）
-  sGhosts    = makeSlider(panel, 'GHOSTS', 0, 16, 0);                // 残像の数（0＝なし）
-  sGhostGap  = makeSlider(panel, 'GHOST_GAP', 1, 8, 2);              // 残像の間隔（何フレーム前ずつか）
-  sGhostFade = makeSlider(panel, 'GHOST_FADE', 0.1, 1, 0.6, 0.05);   // いちばん新しい残像の濃さ（点を残す割合）
-  sGhosts.elt.addEventListener('input', updateGhostRows);
+  // 残像：ボールが通った道に、後ろへいくほど細くなる帯を描く（階段には残らない）
+  sGhostLen   = makeSlider(panel, 'GHOST_LEN', 0, 90, 0);                // 帯の長さ（何フレーム前までか。0＝なし）
+  sGhostWidth = makeSlider(panel, 'GHOST_WIDTH', 0.2, 1, 0.9, 0.05);    // 帯の付け根の太さ（ボールの半径に対する割合）
+  sGhostLen.elt.addEventListener('input', updateGhostRows);
   updateGhostRows();
   // 足跡：ボールが通った所に跡が残り、しばらくすると粒になって消えていく
   footCheck  = makeCheck(panel, 'FOOTPRINTS', false);
@@ -637,7 +636,7 @@ function draw() {
     footprints: footCheck.checked(), trailLife: sTrailLife.value(), trailSize: sTrailSize.value(),
     stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
-    ghosts: sGhosts.value(), ghostGap: sGhostGap.value(), ghostFade: sGhostFade.value(),
+    ghostLen: sGhostLen.value(), ghostWidth: sGhostWidth.value(),
     fallProb: sFallProb.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
@@ -991,9 +990,9 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     balls.forEach((b, i) => drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight,
       base.hand ? { amp: base.handAmp, seed: base.handVariant * 977 + i } : null));
   }
-  // 残像：本物のボールのあとに描く（重なった所は奥行きで本物が勝つ）。
-  // 影は落とさないので、画面の高さの範囲（bounds.y）の外にある残像は描かない（1つずつ描くので重い）
-  drawGhosts(shading, ctx, ghosts.filter(g => g.y + g.r > bounds.y[0] && g.y - g.r < bounds.y[1]));
+  // 残像の帯：本物のボールのあとに描く（ボールの中に入った付け根は、奥行きで本物に隠れる）。
+  // 影は落とさないので、画面の高さの範囲（bounds.y）の外にある帯は描かない
+  drawGhosts(shading, ctx, ghosts.filter(t => t.yMax > bounds.y[0] && t.yMin < bounds.y[1]));
   pop();
 }
 
@@ -1280,26 +1279,24 @@ function updateFootRows() {
   sTrailSize.row.style('display', on ? 'flex' : 'none');
 }
 
-// GHOSTS が 0 なら、残像の間隔と濃さのスライダーを隠す
+// GHOST_LEN が 0 なら、帯の太さのスライダーを隠す
 function updateGhostRows() {
-  const on = sGhosts.value() > 0;
-  sGhostGap.row.style('display', on ? 'flex' : 'none');
-  sGhostFade.row.style('display', on ? 'flex' : 'none');
+  sGhostWidth.row.style('display', sGhostLen.value() > 0 ? 'flex' : 'none');
 }
 
 // ---------------------------------------------------------------------
-// ボールの残像（GHOSTS）
+// ボールの残像（GHOST_LEN）
 // ---------------------------------------------------------------------
-// ボールごと（key）に、毎フレームの位置を新しい順に覚えておく（[0] が今）。
-// 見えなくなったボールの列には null を足していき、残像が古い順に消えたら記録を捨てる。
-// 止まっている間は記録を進めない（残像はその場で止まる）。
-// 戻り値：描く残像 [{ x, y, z, r, ink, fade }]。i 番目は GHOST_GAP × i フレーム前の位置で、
-// 新しいものほど濃い（いちばん新しいのが GHOST_FADE、古くなるほど直線的に薄くなる）
+// ボールごと（key）に、毎フレームの位置を新しい順に覚えておく（[0] が今、GHOST_LEN フレーム前まで）。
+// 見えなくなったボールの列には null を足していき、帯が縮みきったら記録を捨てる。
+// 止まっている間は記録を進めない（帯はその場で止まる）。
+// 記録をたどった道を、長さで等分した GHOST_RINGS 個の輪にする（drawGhosts に渡す形）。
+// 太さは付け根で ボールの半径 × GHOST_WIDTH、道の長さに沿って細くなり、端で 0。
+// 長さはフレーム数で決まるので、速いほど帯が長く、止まったボールの帯は縮んで消える
 function updateGhosts(st, balls, base) {
   const hist = st.ghostHist;
-  const n = base.ghosts, gap = base.ghostGap;
-  if (n <= 0) { hist.clear(); return []; }
-  const keep = n * gap + 1;
+  const len = base.ghostLen;
+  if (len <= 0) { hist.clear(); return []; }
   if (!paused) {
     const seen = new Set();
     for (const b of balls) {
@@ -1311,18 +1308,78 @@ function updateGhosts(st, balls, base) {
     }
     for (const [k, h] of hist) {
       if (!seen.has(k)) h.unshift(null);
-      if (h.length > keep) h.length = keep;
+      if (h.length > len + 1) h.length = len + 1;
       if (h.every(g => !g)) hist.delete(k);
     }
   }
   const out = [];
   for (const h of hist.values()) {
-    for (let i = 1; i <= n; i++) {
-      const g = h[i * gap];
-      if (g && g.r > 0) out.push({ ...g, fade: base.ghostFade * (1 - (i - 1) / n) });
-    }
+    const t = ghostTrail(h, base.ghostWidth);
+    if (t) out.push(t);
   }
   return out;
+}
+
+// 1本の帯の輪を作る。h：新しい順の位置（null で途切れる）
+function ghostTrail(h, w) {
+  const pts = [];
+  for (const g of h) { if (!g) break; pts.push(g); }
+  if (pts.length < 2) return null;
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    cum.push(cum[i - 1] + Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+  }
+  const total = cum[cum.length - 1];
+  if (total < 0.5) return null;
+  const M = GHOST_RINGS;
+  // 道を長さで等分した点と半径
+  const px = [], py = [], pz = [], pr = [];
+  let seg = 1;
+  for (let k = 0; k < M; k++) {
+    const d = total * k / (M - 1);
+    while (seg < pts.length - 1 && cum[seg] < d) seg++;
+    const a = pts[seg - 1], b = pts[seg];
+    const L = cum[seg] - cum[seg - 1];
+    const u = L > 0 ? constrain((d - cum[seg - 1]) / L, 0, 1) : 0;
+    px.push(a.x + (b.x - a.x) * u); py.push(a.y + (b.y - a.y) * u); pz.push(a.z + (b.z - a.z) * u);
+    pr.push((a.r + (b.r - a.r) * u) * w * (1 - k / (M - 1)));
+  }
+  // 輪の向き：道の向き T に垂直な N・B を、前の輪からねじれないように運ぶ（平行移動フレーム）
+  const P = new Float32Array(M * 4), N = new Float32Array(M * 4), B = new Float32Array(M * 3);
+  const ds = total / (M - 1);
+  let tx = 0, ty = 0, tz = 1, nx = 1, ny = 0, nz = 0;
+  let yMin = Infinity, yMax = -Infinity;
+  for (let k = 0; k < M; k++) {
+    const k0 = max(k - 1, 0), k1 = min(k + 1, M - 1);
+    let dx = px[k1] - px[k0], dy = py[k1] - py[k0], dz = pz[k1] - pz[k0];
+    const dl = Math.hypot(dx, dy, dz);
+    if (dl > 1e-6) { tx = dx / dl; ty = dy / dl; tz = dz / dl; }
+    if (k === 0) {
+      // 最初の輪：道の向きとなるべく垂直な軸から作る
+      const ax = abs(ty) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      nx = ax[0]; ny = ax[1]; nz = ax[2];
+    }
+    // N から T の成分を除いて、長さを1にする
+    const dot = nx * tx + ny * ty + nz * tz;
+    nx -= dot * tx; ny -= dot * ty; nz -= dot * tz;
+    let nl = Math.hypot(nx, ny, nz);
+    if (nl < 1e-6) {
+      const ax = abs(ty) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      const d2 = ax[0] * tx + ax[1] * ty + ax[2] * tz;
+      nx = ax[0] - d2 * tx; ny = ax[1] - d2 * ty; nz = ax[2] - d2 * tz;
+      nl = Math.hypot(nx, ny, nz);
+    }
+    nx /= nl; ny /= nl; nz /= nl;
+    // B = T × N（このとき N × B = T）
+    const bx = ty * nz - tz * ny, by = tz * nx - tx * nz, bz = tx * ny - ty * nx;
+    const drds = (pr[k1] - pr[k0]) / ((k1 - k0) * ds);
+    P.set([px[k], py[k], pz[k], pr[k]], k * 4);
+    N.set([nx, ny, nz, drds], k * 4);
+    B.set([bx, by, bz], k * 3);
+    yMin = min(yMin, py[k] - pr[k]); yMax = max(yMax, py[k] + pr[k]);
+  }
+  return { P, N, B, ink: pts[0].ink, yMin, yMax };
 }
 
 // PARTICLES が 0 なら、粒の大きさのスライダーを隠す
