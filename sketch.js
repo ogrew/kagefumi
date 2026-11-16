@@ -330,6 +330,12 @@ function setup() {
   styleButton(pauseBtn);
   pauseBtn.mousePressed(togglePause);
 
+  // SHARE：今のパネルの値を URL にしてコピーする（share.js）
+  const shareBtn = createButton('SHARE').parent(btnRow);
+  styleButton(shareBtn);
+  shareBtn.mousePressed(() => shareNow(shareBtn));
+
+  initShare();   // share.js：初期値を控え、URL の # にパネルの値があれば入れる
   if (typeof startDay === 'function') startDay();   // record.js：?day=N なら、その日の状態から台本を始める
 }
 
