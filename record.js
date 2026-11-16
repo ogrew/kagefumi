@@ -116,6 +116,27 @@ const DAYS = {
     [23.5, 'ROLL', 0, 1.5],
     [26, 'PIXELATE', false],
   ]},
+  // Day 8：オーバルのらせん階段と、落ちるボール。前の日までの状態は最初のコマですべて戻す。
+  // 段の数を上下させ、STEP_SQUASH でらせんをほどいて、また戻す。FALL_PROB はずっと効いている
+  8: { title: '落ちる', events: [
+    [0, 'SHAPE', 'OVAL'],
+    [0, 'W', 120], [0, 'D', 280], [0, 'H', 30], [0, 'V_GAP', 120], [0, 'V_GAP_ANIM', false],
+    [0, 'STEPS', 8], [0, 'GAP', 180], [0, 'GAP_ANIM', false], [0, 'STEP_SQUASH', false], [0, 'STEP_FADE', 1],
+    [0, 'BALL_R_RATIO', 0.6], [0, 'SPEED', -0.8], [0, 'STOP_PROB', 0.3], [0, 'STOP_LEN', 0.2], [0, 'FALL_PROB', 0.2],
+    [0, 'TOP_BALLS', true], [0, 'UNDER_BALLS', false],
+    [0, 'BOUNCE', 1], [0, 'PARTICLES', 6], [0, 'PARTICLE_SIZE', 0.25], [0, 'FOOTPRINTS', false],
+    [0, 'ELEV', 25], [0, 'AZIM0', 45], [0, 'ROLL', 0], [0, 'PROJECTION', 'ORTHO'], [0, 'ZOOM', 1.15], [0, 'ORBIT_SPEED', 0.2],
+    [0, 'COLUMNS', 1],
+    [0, 'SHADING', 'GRAIN'], [0, 'DITHER', 'RANDOM'], [0, 'GRAIN_SIZE', 1], [0, 'DITHER_SCREEN', false],
+    [0, 'STROKE', true], [0, 'HANDWRITING', false],
+    [0, 'COLOR_A', '#ffffff'], [0, 'COLOR_B', '#000000'], [0, 'COLOR_C', '#ee2b2b'], [0, 'INVERT', false],
+    [0, 'BG_SEPARATE', false],
+    [0, 'LIGHT', 'CAMERA'], [0, 'SHADOW_TONE', 0.5],
+    [0, 'MIRROR_X', false], [0, 'MIRROR_Y', false], [0, 'MIRROR_U', 0.5], [0, 'PIXELATE', false], [0, 'PIXEL_SIZE', 4],
+    [2.5, 'STEPS', 12, 1.5], [5, 'STEPS', 4, 1.5], [7.5, 'STEPS', 8, 1.5],
+    [10.5, 'STEP_SQUASH', true],
+    [15.5, 'STEP_SQUASH', false],
+  ]},
 };
 
 let recDay = 0;          // 0 なら台本なし（ふつうの表示）
