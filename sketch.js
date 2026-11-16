@@ -49,6 +49,7 @@ let sunAngle = Math.atan2(-0.3, 0.5);   // 太陽の軌道上の角度（ラジ�
 let panel;
 let colorAPicker, colorBPicker, invertCheck, mixSel;
 let ditherSel, ditherScreen, sGrainSize, sDotPitch, sHatchPitch;
+let sFade;        // FLAT：面の色が切り替わるときのフェードの幅
 let strokeCheck, sStrokeWeight;
 let handCheck, sHandWobble, sHandBoil;
 let colorCPicker, ballASel, ballBSel;
@@ -168,6 +169,7 @@ function setup() {
   handCheck   = makeCheck(panel, 'HANDWRITING', false);             // 輪郭線を手描き風にする
   sHandWobble = makeSlider(panel, 'HAND_WOBBLE', 0.5, 8, 2, 0.5);   // 線のぶれの大きさ（画面ピクセル）
   sHandBoil   = makeSlider(panel, 'HAND_BOIL', 0, 12, 4, 1);        // 線を描き直す回数（1秒あたり。0 で止める）
+  sFade       = makeSlider(panel, 'FADE', 0, 0.2, 0.05, 0.01);      // FLAT：面の色が切り替わるときのフェードの幅（光への向きの値。0 で瞬時）
   // GRAIN の白黒の置き換え方（ディザリング）
   ditherSel    = makeSelect(panel, 'DITHER', ['RANDOM', 'BAYER', 'HALFTONE', 'HATCH'], 'RANDOM');
   ditherScreen = makeCheck(panel, 'DITHER_SCREEN', false);           // 模様を画面に貼りつける（オフ＝面に貼りつける）
@@ -194,6 +196,7 @@ function setup() {
     show(sHandWobble, lines && handCheck.checked());
     show(sHandBoil, lines && handCheck.checked());
     show(sShadowTone, resolveShading(shadingSel.value()).shadow !== false);
+    show(sFade, shadingSel.value() === 'FLAT');
   };
 
   // 2色：A＝背景・光の当たる面（紙）、B＝影・暗い面（インク）。INVERT で役割を入れ替える
@@ -625,6 +628,7 @@ function draw() {
     dither: ditherSel.value(), ditherScreen: ditherScreen.checked(),
     grainSize: sGrainSize.value(), dotPitch: sDotPitch.value(), hatchPitch: sHatchPitch.value(),
     stairShadowTone: sShadowTone.value(),
+    fade: sFade.value(),
     stroke: strokeOn(shading), strokeWeight: sStrokeWeight.value(),
     // 手描きの線：ぶれ（ワールド単位）と、いま使う描き直しの番号
     hand: strokeOn(shading) && handCheck.checked(),
