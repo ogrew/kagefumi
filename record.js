@@ -167,7 +167,7 @@ function startDay() {
   if (!DAYS[recDay]) { recDay = 0; return; }
   // 前の日までの台本をすべて終えた状態にする
   for (const [l, v] of BEFORE_DAY1) setCtl(l, v);
-  for (let d = 1; d < recDay; d++) for (const [, l, v] of DAYS[d].events) setCtl(l, v);
+  for (let d = 1; d < recDay; d++) if (DAYS[d]) for (const [, l, v] of DAYS[d].events) setCtl(l, v);
   // 絵をパネルの右の空いた所の中央へ寄せる
   window.REC_VIEW_SHIFT = (panel.elt.offsetLeft + panel.elt.offsetWidth) / 2;
   DAYS[recDay].events.sort((a, b) => a[0] - b[0]);

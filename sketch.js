@@ -35,7 +35,8 @@ let sBounce, sParticles, sParticleSize, sFallProb;
 let topBallsCheck, underBallsCheck;
 let footCheck, sTrailLife, sTrailSize;   // 足跡（FOOTPRINTS）   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
-let shapeSel;   // 階段の形：SWITCHBACK（折り返し階段）/ OVAL（オーバルのらせん）
+let sLandSize, sStairWidth;   // SQUARE だけの大きさ：角の踊り場の一辺と、階段の幅（踊り場に対する割合）
+let shapeSel;   // 階段の形：SWITCHBACK（折り返し階段）/ OVAL（オーバルのらせん）/ SQUARE（角ばったらせん）
 let projSel, sFov;   // 投影：ORTHO（正投影）/ PERSPECTIVE（透視投影）
 let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
@@ -87,11 +88,12 @@ function setup() {
   makeGroup(panel, 'Kagefumi', true);
 
   makeSection(panel, 'SHAPE');        // 階段の形（大枠）
-  shapeSel = makeSelect(panel, 'SHAPE', ['SWITCHBACK', 'OVAL'], 'SWITCHBACK');
+  shapeSel = makeSelect(panel, 'SHAPE', ['SWITCHBACK', 'OVAL', 'SQUARE'], 'SWITCHBACK');
 
   makeSection(panel, 'LANDING');      // 踊り場の大きさと、上下に重なる踊り場の間隔
   sW     = makeSlider(panel, 'W',          60,  360, 120);
   sD     = makeSlider(panel, 'D',         120,  480, 240);
+  sLandSize = makeSlider(panel, 'LANDING_SIZE', 40, 360, 120);   // SQUARE：角の踊り場（正方形）の一辺
   sH     = makeSlider(panel, 'H',           5,  200,  30);
   sVGap  = makeSlider(panel, 'V_GAP',       0,  400, 180);
   animV  = makeAnim(panel, 'V_GAP', sVGap, 120, 180, 0.14, 240);
@@ -99,6 +101,7 @@ function setup() {
   makeSection(panel, 'STAIRS');       // 段数と、向かい合う踊り場の間隔（＝階段の長さ）
   sSteps = makeSlider(panel, 'STEPS',       3,   12,   6);
   sGap   = makeSlider(panel, 'GAP',         0,  400, 180);
+  sStairWidth = makeSlider(panel, 'STAIR_WIDTH', 0, 1, 0.4, 0.01);   // SQUARE：階段の幅（LANDING_SIZE に対する割合。ボールの大きさもこれに比例）
   animGap = makeAnim(panel, 'GAP', sGap, 80, 160, 0.21, 240);
   // 段の動き：段はボールの近くにだけあり、近づくと下端から縦に伸びて現れ、去ると縮んで消える
   stepSquashCheck = makeCheck(panel, 'STEP_SQUASH', false);
@@ -494,10 +497,29 @@ function shapeFor(c) {
   p.run = p.gap / p.steps;
   p.rise = p.step / (p.steps + 1);
   p.sw = p.D * STAIR_W_RATIO;
+  if (shapeSel.value() === 'SQUARE') {
+    // SQUARE は W / D の代わりに、角の踊り場の一辺と階段の幅を直接決める
+    p.W = sLandSize.value();
+    p.sw = p.W * sStairWidth.value();
+  }
   p.zc = p.D / 2 - p.sw / 2;                  // 階段の中心z（絶対値）
   p.R = p.sw * sBallR.value() / 2;            // 球の半径（1.0で直径＝階段の幅）
   p.oval = shapeSel.value() === 'OVAL';
-  if (p.oval) {
+  p.square = shapeSel.value() === 'SQUARE';
+  p.track = p.oval || p.square;   // ずっと同じ向きに回るらせん（踊り場で折り返さない）
+  p.period = p.square ? 4 : 2;    // 形が何踊り場ごとに繰り返すか
+  if (p.square) {
+    // 角ばったらせん：四隅に一辺 W（LANDING_SIZE）の正方形の踊り場、4辺に長さ GAP の直線の階段（幅は sw ＝ STAIR_WIDTH）。
+    // 踊り場の中心は (±h, ±h)。ボールは踊り場の上を半径 W/2 の四分円で 90度曲がる
+    p.tw = p.sw;
+    p.h = p.gap / 2 + p.W / 2;
+    const turn = PI * p.W / 4;                 // 四分円の長さ
+    p.Lo = turn / (turn + p.gap);              // 1サイクルのうち踊り場にいる割合（一定の速さ）
+    // 落ちる：階段に出てすぐ（上りなら階段の終わり近く）で外側の縁に着く
+    p.fallF = p.Lo + (1 - p.Lo) * 0.25;
+    p.fallB = 1 - (1 - p.Lo) * 0.25;
+    p.xr = p.zr = p.h + p.W / 2;
+  } else if (p.oval) {
     // オーバル：踊り場は長さ W の直線、階段は半円のカーブ。トラックの幅は階段の幅（sw）と同じ。
     // GAP はカーブの内側の穴の直径。ボールはトラックの中心線（半径 rc）を通る
     p.tw = p.sw;
@@ -508,6 +530,8 @@ function shapeFor(c) {
     p.Lo = p.W / (p.W + PI * p.rc);
     p.xr = p.W / 2 + p.rIn + p.tw;             // 横（x）の広がり
     p.zr = p.rIn + p.tw;                       // 奥行き（z）の広がり
+    p.fallF = OVAL_FALL_F;
+    p.fallB = 1 - OVAL_FALL_F;
   } else {
     p.xr = p.gap / 2 + p.W;
     p.zr = p.D / 2;
@@ -515,13 +539,20 @@ function shapeFor(c) {
   return p;
 }
 
-// SHAPE に合わせてパネルを変える。OVAL では W を 0 まで下げられ（0 で真円のらせん）、L_A / L_B は使わない
+// SHAPE に合わせてパネルを変える。OVAL では W を 0 まで下げられ（0 で真円のらせん）、OVAL / SQUARE では L_A / L_B は使わない
 function updateShapeRows() {
   const oval = shapeSel.value() === 'OVAL';
+  const track = shapeSel.value() !== 'SWITCHBACK';
   sW.elt.min = oval ? 0 : 60;
   if (!oval && sW.value() < 60) { sW.value(60); sW.elt.dispatchEvent(new Event('input')); }
-  sLA.row.style('display', oval ? 'none' : 'flex');
-  sLB.row.style('display', oval ? 'none' : 'flex');
+  sLA.row.style('display', track ? 'none' : 'flex');
+  sLB.row.style('display', track ? 'none' : 'flex');
+  // SQUARE は W / D の代わりに LANDING_SIZE / STAIR_WIDTH を使う
+  const square = shapeSel.value() === 'SQUARE';
+  sW.row.style('display', square ? 'none' : 'flex');
+  sD.row.style('display', square ? 'none' : 'flex');
+  sLandSize.row.style('display', square ? 'flex' : 'none');
+  sStairWidth.row.style('display', square ? 'flex' : 'none');
 }
 
 // H キーでパネル全体を表示・非表示
@@ -785,8 +816,8 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   const S = st.S;                                 // 画面の中心にくる踊り場の番号（折り返しなし）
   // 以下、座標はすべて「階段ローカル」（踊り場kの中心y = k*step）。
   // 数が大きくなりすぎないよう、折り返しなしの番号から F（偶数）を引いた番号で扱う。
-  // 形は2踊り場ごとに繰り返すので、F をずらしても見た目は変わらない
-  const F = 2 * floor(S / 2);
+  // 形は p.period（2 か 4）踊り場ごとに繰り返すので、F をずらしても見た目は変わらない
+  const F = p.period * floor(S / p.period);
   const s = S - F;                                // 画面の中心（ローカル）。最後に -s*step だけずらして描く
   if (st.F !== undefined && st.F !== F) {
     // 基準がずれたら、ローカル座標で持っている粒も同じだけずらす
@@ -809,7 +840,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   const pathBalls = [];   // 段の動き（STEP_SQUASH）用：画面の少し外まで含めたボールの位置
   const stepMode = base.stepSquash;
   if (p.R > 0 || stepMode) {
-    const LA = p.oval ? p.Lo : sLA.value(), LB = p.oval ? p.Lo : sLB.value();
+    const LA = p.track ? p.Lo : sLA.value(), LB = p.track ? p.Lo : sLB.value();
     const warpA = buildWarp(LA, sStopLen.value());
     const warpB = buildWarp(LB, sStopLen.value());
     const prob = sStopP.value();
@@ -885,7 +916,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     if (!stepCache.has(key)) stepCache.set(key, stepTransform(k, i, p, pathBalls, base.stepFade, F));
     return stepCache.get(key);
   };
-  const k0 = kMin - (((kMin % 2) + 2) % 2);   // kMin以下の偶数
+  const k0 = kMin - (((kMin % p.period) + p.period) % p.period);   // kMin以下で、形の繰り返しの始まり
 
   // 影の下準備：光源から見た奥行きを描く
   // 画面外（光源側）にある踊り場も影を落とすので、上下に SHADOW_EXTRA 踊り場ぶん余分に描く
@@ -900,7 +931,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   shadowPass(shading, ctx, bounds, casterY,
     (dsh) => {   // 階段・踊り場
       dsh.setUniform('uObjScale', 1.0);
-      for (let k = k0 - SHADOW_EXTRA; k <= kMax + SHADOW_EXTRA; k += 2) {
+      for (let k = k0 - SHADOW_EXTRA; k <= kMax + SHADOW_EXTRA; k += p.period) {
         dsh.setUniform('uOffset', [0, k * p.step, 0]);
         model(geo);
       }
@@ -921,7 +952,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   translate(0, -s * p.step, 0);
   // 手描きのときは、箱の線は描かずに塗りだけを描き、あとで手描きの線を重ねる
   const sh = beginShading(shading, base.hand ? { ...ctx, stroke: false } : ctx);
-  for (let k = k0; k <= kMax; k += 2) {
+  for (let k = k0; k <= kMax; k += p.period) {
     sh.setUniform('uOffset', [0, k * p.step, 0]);
     push();
     translate(0, k * p.step, 0);
@@ -1137,7 +1168,7 @@ function leaveFootprint(st, key, q, L, p, ball, base, hit, yShift) {
   if (rolling) {
     // 面から離れている間（裏の世界で縁から落ちている間など）は残さない
     const n = ball.under ? -floor(q) : floor(q);
-    const surf = p.oval ? ovalPos(q, p, L, 0, ball.under).y
+    const surf = p.track ? trackPos(q, p, L, 0, ball.under).y
                : ball.under ? contactYUnder(ball.x, ball.z, n, p) : contactY(ball.x, ball.z, n, p);
     if (abs(ball.y - yShift - surf) > 0.5) { st.lastMark.delete(key); return; }
     // 前の跡から一定の距離（半径の0.8倍）進んだら、次の跡を置く
@@ -1255,9 +1286,9 @@ function fallsAt(j, id, n, col, prob) {
 //   上り（dir < 0）：落ちる踊り場の端を越えてから、上の踊り場に着くまで（その間の階段も）
 function fallHidden(q, L, fall, dir, p) {
   const f = q - floor(q);
-  // オーバル：サイクルの始め（上りなら終わり）から OVAL_FALL_F までの間に外側へ寄っていき、
+  // オーバル・角ばったらせん：サイクルの始め（上りなら終わり）から外側の縁に着く所（fallF / fallB）までの間に外側へ寄っていき、
   // 外側の縁を越えたら隠れる。次のサイクルに入ったら現れる
-  if (p && p.oval) return fall.here && (dir >= 0 ? f >= OVAL_FALL_F : f < 1 - OVAL_FALL_F);
+  if (p && p.track) return fall.here && (dir >= 0 ? f >= p.fallF : f < p.fallB);
   if (dir >= 0) return fall.here && f >= L * FALL_EDGE;
   return (fall.here && f < L * (1 - FALL_EDGE)) || (fall.next && f >= L);
 }
@@ -1283,17 +1314,17 @@ function fallBall(st, sp, p, base, under, yShift) {
   let rec = st.fall.get(sp.key);
   if (!rec) { rec = { hidden, age: -1 }; st.fall.set(sp.key, rec); }
   rec.frame = st.frame;
-  if (hidden && !rec.hidden && fall.here && (p.oval || f < L)) spawnFaller(st, sp, p, under, yShift, dir);
+  if (hidden && !rec.hidden && fall.here && (p.track || f < L)) spawnFaller(st, sp, p, under, yShift, dir);
   const appear = !hidden && rec.hidden;
   if (appear) rec.age = 0;
   rec.hidden = hidden;
   if (hidden) return null;
 
   let pos;
-  if (p.oval) {
+  if (p.track) {
     // 落ちるサイクルでは、外側の縁へ少しずつ寄っていく
-    const lat = fall.here ? min(1, (dir >= 0 ? f : 1 - f) / OVAL_FALL_F) * p.tw / 2 : 0;
-    pos = ovalPos(q, p, L, base.bounce, under, lat);
+    const lat = fall.here ? min(1, dir >= 0 ? f / p.fallF : (1 - f) / (1 - p.fallB)) * p.tw / 2 : 0;
+    pos = trackPos(q, p, L, base.bounce, under, lat);
   } else {
     const straight = fall.here && f < L && (dir >= 0 ? t < FALL_EDGE : t > 1 - FALL_EDGE);
     pos = straight ? fallStraight(dir >= 0 ? t : 1 - t, dir >= 0, n, p, under)
@@ -1316,13 +1347,14 @@ function fallBall(st, sp, p, base, under, yShift) {
 function spawnFaller(st, sp, p, under, yShift, dir) {
   const n = floor(sp.q);
   let e, ox, oz, speed;
-  if (p.oval) {
-    // オーバル：外側の縁の位置と、その外向き（直線ならトラックの外側、カーブなら半径の外向き）
-    const fEdge = n + (dir >= 0 ? OVAL_FALL_F : 1 - OVAL_FALL_F);
-    e = ovalPos(fEdge, p, sp.L, 0, under, p.tw / 2);
-    const o = ovalOutward(fEdge, p, sp.L, under);
-    ox = o.x; oz = o.z;
-    speed = (p.W + PI * p.rc) * abs(st.du ?? 0);   // 道に沿って進む速さ（1フレームあたり）
+  if (p.track) {
+    // オーバル・角ばったらせん：外側の縁の位置と、その外向き
+    const fEdge = n + (dir >= 0 ? p.fallF : p.fallB);
+    e = trackPos(fEdge, p, sp.L, 0, under, p.tw / 2);
+    const o = (p.oval ? ovalPlace : squarePlace)(fEdge, p, sp.L, under);
+    ox = o.ox; oz = o.oz;
+    // 道に沿って進む速さ（1フレームあたり）
+    speed = (p.oval ? p.W + PI * p.rc : PI * p.W / 4 + p.gap) * abs(st.du ?? 0);
   } else {
     e = fallStraight(FALL_EDGE, dir >= 0, n, p, under);
     ox = sideOf(under ? -n : n); oz = 0;
@@ -1430,14 +1462,14 @@ function drawBall(pos, R, col, a, e, lineCol, outline, lineW = 1, hand = null) {
   pop();
 }
 
-// 踊り場0・1（とそれぞれの階段）を1つのジオメトリにまとめてキャッシュする
+// 踊り場0〜period-1（とそれぞれの階段）を1つのジオメトリにまとめてキャッシュする
 // 形に関わるスライダーが変わったときだけ作り直す
 // 列ごとに持つ（形のアニメーションでは、列ごとに形が違うため）
 const stairGeos = new Map();   // 列番号 c → { key, geo }
 // withStroke：輪郭線を描くか。描かないなら線のデータを作らない（作り直しが軽くなる）
 // landingsOnly：踊り場だけを作る（段を1つずつ動かす STEP_SQUASH のとき）
 function stairGeometry(p, c = 0, withStroke = true, landingsOnly = false) {
-  const geoKey = [p.oval, p.W, p.D, p.steps, p.H, p.gap, p.step, withStroke, landingsOnly].join(',');
+  const geoKey = [p.oval, p.square, p.W, p.D, p.sw, p.steps, p.H, p.gap, p.step, withStroke, landingsOnly].join(',');
   let entry = stairGeos.get(c);
   if (!entry) { entry = { key: '', geo: null }; stairGeos.set(c, entry); }
   if (geoKey !== entry.key) {
@@ -1445,7 +1477,7 @@ function stairGeometry(p, c = 0, withStroke = true, landingsOnly = false) {
     entry.geo = buildGeometry(() => {
       if (!withStroke) noStroke();
       if (p.oval) { ovalStairs(p, withStroke, landingsOnly); return; }
-      for (let k = 0; k <= 1; k++) {
+      for (let k = 0; k < p.period; k++) {
         const list = boxesOf(k, p);
         for (const b of (landingsOnly ? list.slice(0, 1) : list)) {
           push();
@@ -1537,7 +1569,7 @@ function drawHandLines(p, base, geo, stepMode, k0, kMax, stepAt, F) {
   noFill();
   for (let pass = 0; pass < HAND_PASSES; pass++) {
     hs.setUniform('uHandAmp', base.handAmp);
-    for (let k = k0; k <= kMax; k += 2) {
+    for (let k = k0; k <= kMax; k += p.period) {
       hs.setUniform('uHandSeed', handSeed(k + F, pass, base.handVariant));
       push();
       translate(0, k * p.step, 0);
@@ -1557,7 +1589,7 @@ function drawHandLines(p, base, geo, stepMode, k0, kMax, stepAt, F) {
             continue;
           }
           // 縮んだ段はぶれも小さくする（小さな段の線が大きくはみ出さないように）
-          const f = constrain(min(t.sx / p.run, t.sy / p.rise, t.sz / p.sw), 0, 1);
+          const f = constrain(p.square ? t.sy / p.rise : min(t.sx / p.run, t.sy / p.rise, t.sz / p.sw), 0, 1);
           hs.setUniform('uHandAmp', base.handAmp * f);
           push();
           translate(t.cx, t.cy, t.cz);
@@ -1774,13 +1806,101 @@ function ovalPos(q, p, L, bounce = 0, under = false, lat = 0) {
   return { x: pl.x, y, z: pl.z };
 }
 
-// 落ちるときの外向き（直線ならトラックの外側、カーブなら半径の外向き）
-function ovalOutward(q, p, L, under) {
-  const pl = ovalPlace(q, p, L, under);
-  return { x: pl.ox, z: pl.oz };
+// ---------------------------------------------------------------------
+// 角ばったらせん（SHAPE = SQUARE）
+// ---------------------------------------------------------------------
+// 踊り場kは四隅の1つ（SQUARE_CORNERS を k の順に回る）にある一辺 W の正方形。
+// 踊り場k-1 → k の間は、正方形の1辺に沿ったまっすぐな階段（踊り場kの段 i = 1〜steps。i = 1 が踊り場kのすぐ上）。
+// 段は箱なので、ボールの高さは折り返し階段と同じ contactY / contactYUnder で求める
+const SQUARE_CORNERS = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+function squareCorner(k, p) {
+  const c = SQUARE_CORNERS[((k % 4) + 4) % 4];
+  return { x: c[0] * p.h, z: c[1] * p.h };
+}
+
+// 踊り場kと、その段（踊り場k-1 の側へ並ぶ）
+function squareBoxes(k, p) {
+  const P = squareCorner(k, p), Q = squareCorner(k - 1, p);
+  const top = k * p.step - p.H / 2;
+  const list = [{ x: P.x, z: P.z, top, w: p.W, h: p.H, d: p.W }];
+  const dx = Math.sign(Q.x - P.x), dz = Math.sign(Q.z - P.z);   // 踊り場k-1 へ向かう向き（どちらかは0）
+  for (let i = 1; i <= p.steps; i++) {
+    const c = p.W / 2 + (i - 0.5) * p.run;
+    list.push({
+      x: P.x + dx * c, z: P.z + dz * c, top: top - i * p.rise,
+      w: dx ? p.run : p.tw, h: p.rise, d: dz ? p.run : p.tw,
+    });
+  }
+  return list;
+}
+
+// 進み q のボールの、道の上の位置（高さ以外）と外向き。lat：中心線から外側（正方形の外）へのずれ。
+// 表：踊り場nで四分円を描いて曲がり、踊り場n+1 へまっすぐ下る。裏：その逆向き（踊り場n → n-1 へ上る）
+// g：階段の上の位置（段の数で数える。0〜steps、踊り場nの側が0）。at(g)：階段の上の点
+function squarePlace(q, p, L, under, lat = 0) {
+  const m = floor(q), f = q - m;
+  const n = under ? -m : m;
+  const P = squareCorner(n, p), A = squareCorner(n - 1, p), B = squareCorner(n + 1, p);
+  const din = { x: Math.sign(P.x - A.x), z: Math.sign(P.z - A.z) };    // 踊り場n-1 → n の向き
+  const dout = { x: Math.sign(B.x - P.x), z: Math.sign(B.z - P.z) };   // 踊り場n → n+1 の向き
+  const w2 = p.W / 2;
+  if (f < L) {
+    // 四分円：中心 C = P - din·W/2 + dout·W/2、入口 P - din·W/2 → 出口 P + dout·W/2
+    const t = f / L;
+    const phi = HALF_PI * (under ? 1 - t : t);
+    const cx = P.x - din.x * w2 + dout.x * w2, cz = P.z - din.z * w2 + dout.z * w2;
+    const ux = -dout.x * cos(phi) + din.x * sin(phi), uz = -dout.z * cos(phi) + din.z * sin(phi);   // 中心から外向き
+    const r = w2 + lat;
+    return { x: cx + ux * r, z: cz + uz * r, ox: ux, oz: uz, n, landing: true };
+  }
+  const u = (f - L) / (1 - L);
+  // 表は踊り場nの出口から n+1 へ、裏は踊り場nの入口から n-1 へ
+  const d = under ? { x: -din.x, z: -din.z } : dout;
+  const s0 = under ? { x: P.x - din.x * w2, z: P.z - din.z * w2 } : { x: P.x + dout.x * w2, z: P.z + dout.z * w2 };
+  // 外向き：階段の向きに垂直で、正方形の中心から離れる向き
+  const ox = d.z !== 0 ? Math.sign(P.x) : 0, oz = d.x !== 0 ? Math.sign(P.z) : 0;
+  const at = g => ({ x: s0.x + d.x * p.gap * (g / p.steps) + ox * lat, z: s0.z + d.z * p.gap * (g / p.steps) + oz * lat });
+  const g = u * p.steps;
+  return { ...at(g), ox, oz, n, landing: false, g, at };
+}
+
+// 角ばったらせんのボールの位置
+function squarePos(q, p, L, bounce = 0, under = false, lat = 0) {
+  const pl = squarePlace(q, p, L, under, lat);
+  const yAt = (x, z) => under ? contactYUnder(x, z, pl.n, p) : contactY(x, z, pl.n, p);
+  if (pl.landing) return { x: pl.x, y: yAt(pl.x, pl.z), z: pl.z };
+  // 裏の世界では、段差を越えるとき放物線で上る／縁から落ちる（ballPosUnder と同じ）
+  const yU = g => { const v = pl.at(g); return yAt(v.x, v.z); };
+  const g = pl.g;
+  let y = yU(g);
+  if (under) {
+    const fall = 4 * p.rise;
+    for (let d = 0.1; d <= 2.5; d += 0.1) {
+      const gb = max(g - d, 0), gf = min(g + d, p.steps);
+      y = max(y, yU(gb) - fall * sq(g - gb));
+      y = max(y, yU(gf) - fall * sq(gf - g));
+    }
+  }
+  if (bounce > 0 && p.steps > 0) {
+    let a, b;
+    if (g < 0.5) { a = 0; b = 0.5; }
+    else if (g > p.steps - 0.5) { a = p.steps - 0.5; b = p.steps; }
+    else { a = floor(g - 0.5) + 0.5; b = a + 1; }
+    const ya = yU(a), yb = yU(b);
+    const k = (g - a) / (b - a);
+    const h = bounce * p.rise * (b - a);
+    y = under ? max(y, lerp(ya, yb, k) + 4 * h * k * (1 - k)) : min(y, lerp(ya, yb, k) - 4 * h * k * (1 - k));
+  }
+  return { x: pl.x, y, z: pl.z };
+}
+
+// オーバル・角ばったらせんの位置（形で振り分ける）
+function trackPos(q, p, L, bounce = 0, under = false, lat = 0) {
+  return p.oval ? ovalPos(q, p, L, bounce, under, lat) : squarePos(q, p, L, bounce, under, lat);
 }
 
 function boxesOf(k, p) {
+  if (p.square) return squareBoxes(k, p);
   const side = sideOf(k);
   const top = k * p.step - p.H / 2;
   const list = [{ x: side * (p.gap / 2 + p.W / 2), z: 0, top: top, w: p.W, h: p.H, d: p.D }];
