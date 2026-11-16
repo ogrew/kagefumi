@@ -759,6 +759,70 @@ function shadeBalls(name, ctx) {
   return true;
 }
 
+// ---------------------------------------------------------------------
+// ボールの残像（GHOSTS）：過去の位置に描く球を、規則的な点のパターン（Bayer）で間引いて薄く見せる。
+// 中間の色は出さない（足跡と同じ考え方）。階段は描き直さないので、階段には残像が出ない。
+// 同じ3D空間に描くので、階段の向こうに回った残像はちゃんと階段に隠れる。影は落とさない
+// ---------------------------------------------------------------------
+// 間引くしきい値：塗りのディザ（bayer8(画面座標)）と同じ模様だと、残る点がいつも同じ明るさの点になり、
+// 黒いボールの残像が白く抜けたりする。縦横を入れ替えてずらし、塗りの模様と重ならないようにする
+const GHOST_CUT = `
+uniform float uGhostFade;   // 残す点の割合（1 = 全部残す、0 = 全部消す）
+bool ghostCut() {
+  vec2 c = floor(gl_FragCoord.xy / max(uGrain, 1.0));
+  return bayer8(c.yx + vec2(5.0, 2.0)) + 0.5 / 64.0 > uGhostFade;
+}
+`;
+// シェーディングのボール用の塗り（s.ball）をそのまま使い、先頭で間引く
+// （#define main で名前を変えると、ドライバによっては main がないと言われるので、文字列で置き換える）
+const ghostWrap = (ball) => ball.replace(/void\s+main\s*\(\s*\)/, 'void ghostBallMain()') + GHOST_CUT +
+  'void main() { if (ghostCut()) discard; ghostBallMain(); }\n';
+// ボール用の塗りがないシェーディング（NONE / FLAT）：通常描画のボールと同じベタ塗り＋輪郭線
+const GHOST_FLAT = GHOST_CUT + `
+uniform vec3 uGhostCol;    // 塗りの色
+uniform vec3 uGhostLine;   // 輪郭線の色
+uniform float uRimSin;     // 輪郭線になる所：視線と垂直な度合い（sin）がこれより大きい所。2 なら線なし
+uniform vec3 uToCam;       // カメラへ向かう向き（階段ローカル座標）
+void main() {
+  if (ghostCut()) discard;
+  float nv = dot(normalize(vNormal), uToCam);
+  float s = sqrt(max(0.0, 1.0 - nv * nv));
+  gl_FragColor = vec4(s > uRimSin ? uGhostLine : uGhostCol, 1.0);
+}
+`;
+
+// ghosts：[{ x, y, z, r, ink, fade }]
+function drawGhosts(name, ctx, ghosts) {
+  if (!ghosts.length) return;
+  const s = resolveShading(name);
+  const sh = s.ball ? getShader(s.key + ':ghost', SHADE_VERT, FRAG_HEAD + ghostWrap(s.ball))
+                    : getShader('ghost:flat', SHADE_VERT, FRAG_HEAD + GHOST_FLAT);
+  shader(sh);
+  setCommonUniforms(sh, s, ctx);
+  if (s.ball) sh.setUniform('uForceScreen', 1);   // shadeBalls と同じ
+  // 1つずつ p5 の変換を使わずに描く（位置は uOffset と uObjScale だけで決める）
+  sh.setUniform('uObjDirect', 1);
+  noStroke();
+  const lineW = ctx.strokeWeight || 1;
+  for (const g of ghosts) {
+    sh.setUniform('uGhostFade', g.fade);
+    sh.setUniform('uOffset', [g.x, g.y, g.z]);
+    sh.setUniform('uObjScale', g.r);
+    if (s.ball) sh.setUniform('uIsInk', g.ink ? 1 : 0);
+    else {
+      sh.setUniform('uGhostCol', g.ink ? ctx.ink : ctx.paper);
+      sh.setUniform('uGhostLine', ctx.ink);
+      // 紙のボールだけ輪郭線（drawBall と同じ）。線の太さ（画面ピクセル）を半径の割合に直す
+      const outline = ctx.stroke && !g.ink;
+      sh.setUniform('uRimSin', outline ? 1 - lineW / max(g.r * ctx.zoom, 1e-3) : 2);
+    }
+    sphere(1, 24, 16);
+  }
+  sh.setUniform('uObjDirect', 0);
+  resetShader();
+  stroke(inkColor255(ctx));
+}
+
 // インク色・紙の色（0〜255）。シェーダーを使わずに描くもの（背景・輪郭線・通常描画のボール）用
 function inkColor255(ctx) {
   return (ctx.ink || [0, 0, 0]).map(c => c * 255);

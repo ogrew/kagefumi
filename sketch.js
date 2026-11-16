@@ -33,6 +33,7 @@ function dtMs() { return window.REC_FRAME_MS ?? deltaTime; }
 
 let sBounce, sParticles, sParticleSize, sFallProb;
 let topBallsCheck, underBallsCheck;
+let sGhosts, sGhostGap, sGhostFade;   // ボールの残像（GHOSTS）
 let footCheck, sTrailLife, sTrailSize;   // 足跡（FOOTPRINTS）   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let sLandSize, sStairWidth;   // SQUARE だけの大きさ：角の踊り場の一辺と、階段の幅（踊り場に対する割合）
@@ -124,6 +125,12 @@ function setup() {
   sParticleSize = makeSlider(panel, 'PARTICLE_SIZE', 0.05, 0.5, 0.25, 0.01);  // 粒の大きさ（ボールの半径に対する割合）
   sParticles.elt.addEventListener('input', updateParticleRow);
   updateParticleRow();
+  // 残像：ボールの過去の位置に、点を間引いて薄くした球を描く（階段には残らない）
+  sGhosts    = makeSlider(panel, 'GHOSTS', 0, 16, 0);                // 残像の数（0＝なし）
+  sGhostGap  = makeSlider(panel, 'GHOST_GAP', 1, 8, 2);              // 残像の間隔（何フレーム前ずつか）
+  sGhostFade = makeSlider(panel, 'GHOST_FADE', 0.1, 1, 0.6, 0.05);   // いちばん新しい残像の濃さ（点を残す割合）
+  sGhosts.elt.addEventListener('input', updateGhostRows);
+  updateGhostRows();
   // 足跡：ボールが通った所に跡が残り、しばらくすると粒になって消えていく
   footCheck  = makeCheck(panel, 'FOOTPRINTS', false);
   sTrailLife = makeSlider(panel, 'TRAIL_LIFE', 0.5, 2, 1.0, 0.1);     // 跡が消えるまでの秒数
@@ -308,6 +315,7 @@ function setup() {
     topBallsCheck.checked(true);
     footCheck.checked(false);
     updateFootRows();
+    updateGhostRows();
     underBallsCheck.checked(true);
     colorCPicker.value(COLOR_C_DEFAULT);
     bgPicker.value(BG_DEFAULT);
@@ -629,6 +637,7 @@ function draw() {
     footprints: footCheck.checked(), trailLife: sTrailLife.value(), trailSize: sTrailSize.value(),
     stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
+    ghosts: sGhosts.value(), ghostGap: sGhostGap.value(), ghostFade: sGhostFade.value(),
     fallProb: sFallProb.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
@@ -698,6 +707,7 @@ function draw() {
       ...base.uniforms,
       uViewRight: [right.x, right.y, right.z],
       uViewDown: [up.x, up.y, up.z],
+      uToCam: [-fwd.x, -fwd.y, -fwd.z],   // 残像（NONE / FLAT）の輪郭線用
     };
     if (lightSel.value() !== 'FIXED') {
       // カメラへ向かう方向を、画面の上方向へ LIGHT_UP 度だけ傾ける
@@ -781,7 +791,7 @@ function updateProjRows() {
 // 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
 const columnStates = new Map();
 function columnState(c) {
-  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [], marks: [], lastMark: new Map(), fall: new Map(), fallers: [], frame: 0 });
+  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [], marks: [], lastMark: new Map(), fall: new Map(), fallers: [], frame: 0, ghostHist: new Map() });
   return columnStates.get(c);
 }
 
@@ -825,6 +835,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     for (const pt of st.particles) { pt.y -= d; pt.floor -= d; }
     for (const mk of st.marks) mk.y -= d;
     for (const b of st.fallers) b.y -= d;
+    for (const h of st.ghostHist.values()) for (const g of h) if (g) g.y -= d;
   }
   st.F = F;
   const yShift = -F * p.step;                     // 折り返しなしの座標 → ローカル座標
@@ -883,6 +894,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
             st.lastMark.delete(sp.key);
             continue;
           }
+          b.key = sp.key;
           balls.push(b);
           // 着地したら粒を出す（前のフレームからの進みを見る）
           if (base.particles > 0 || base.footprints) {
@@ -902,10 +914,11 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   // 落ちていくボール：しばらくは元の大きさのまま落ち、そのあとゆっくり縮んで消える
   for (const b of st.fallers) {
     const u = constrain((b.age - FALL_HOLD_SEC) / FALL_SHRINK_SEC, 0, 1);
-    balls.push({ x: b.x, y: b.y, z: b.z, r: b.r * (1 - u * u * (3 - 2 * u)), ink: b.ink, under: b.under });
+    balls.push({ x: b.x, y: b.y, z: b.z, r: b.r * (1 - u * u * (3 - 2 * u)), ink: b.ink, under: b.under, key: b.key });
   }
 
   const ctx = { ...base, balls, centerY: s * p.step };
+  const ghosts = updateGhosts(st, balls, base);
 
   // 形は2踊り場ごとに繰り返すので、キャッシュした2踊り場分を偶数kごとに並べる
   const geo = stairGeometry(p, c, base.stroke, stepMode);
@@ -978,6 +991,9 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     balls.forEach((b, i) => drawBall(b, b.r, b.ink ? ink : paper, a, e, ink, ctx.stroke && !b.ink, ctx.strokeWeight,
       base.hand ? { amp: base.handAmp, seed: base.handVariant * 977 + i } : null));
   }
+  // 残像：本物のボールのあとに描く（重なった所は奥行きで本物が勝つ）。
+  // 影は落とさないので、画面の高さの範囲（bounds.y）の外にある残像は描かない（1つずつ描くので重い）
+  drawGhosts(shading, ctx, ghosts.filter(g => g.y + g.r > bounds.y[0] && g.y - g.r < bounds.y[1]));
   pop();
 }
 
@@ -1264,6 +1280,51 @@ function updateFootRows() {
   sTrailSize.row.style('display', on ? 'flex' : 'none');
 }
 
+// GHOSTS が 0 なら、残像の間隔と濃さのスライダーを隠す
+function updateGhostRows() {
+  const on = sGhosts.value() > 0;
+  sGhostGap.row.style('display', on ? 'flex' : 'none');
+  sGhostFade.row.style('display', on ? 'flex' : 'none');
+}
+
+// ---------------------------------------------------------------------
+// ボールの残像（GHOSTS）
+// ---------------------------------------------------------------------
+// ボールごと（key）に、毎フレームの位置を新しい順に覚えておく（[0] が今）。
+// 見えなくなったボールの列には null を足していき、残像が古い順に消えたら記録を捨てる。
+// 止まっている間は記録を進めない（残像はその場で止まる）。
+// 戻り値：描く残像 [{ x, y, z, r, ink, fade }]。i 番目は GHOST_GAP × i フレーム前の位置で、
+// 新しいものほど濃い（いちばん新しいのが GHOST_FADE、古くなるほど直線的に薄くなる）
+function updateGhosts(st, balls, base) {
+  const hist = st.ghostHist;
+  const n = base.ghosts, gap = base.ghostGap;
+  if (n <= 0) { hist.clear(); return []; }
+  const keep = n * gap + 1;
+  if (!paused) {
+    const seen = new Set();
+    for (const b of balls) {
+      if (!b.key) continue;   // 粒には残像を付けない
+      seen.add(b.key);
+      let h = hist.get(b.key);
+      if (!h) hist.set(b.key, h = []);
+      h.unshift({ x: b.x, y: b.y, z: b.z, r: b.r, ink: b.ink });
+    }
+    for (const [k, h] of hist) {
+      if (!seen.has(k)) h.unshift(null);
+      if (h.length > keep) h.length = keep;
+      if (h.every(g => !g)) hist.delete(k);
+    }
+  }
+  const out = [];
+  for (const h of hist.values()) {
+    for (let i = 1; i <= n; i++) {
+      const g = h[i * gap];
+      if (g && g.r > 0) out.push({ ...g, fade: base.ghostFade * (1 - (i - 1) / n) });
+    }
+  }
+  return out;
+}
+
 // PARTICLES が 0 なら、粒の大きさのスライダーを隠す
 function updateParticleRow() {
   if (sParticleSize) sParticleSize.row.style('display', sParticles.value() > 0 ? 'flex' : 'none');
@@ -1363,7 +1424,8 @@ function spawnFaller(st, sp, p, under, yShift, dir) {
   // 端の角から転がり落ちる：落ち始めの FALL_TIP_SEC の間に、ボールが踊り場にめり込まない所（端から半径ぶん外）まで出る
   st.fallers.push({ x: e.x, z: e.z, xe: e.x, ze: e.z, ox: ox * p.R, oz: oz * p.R, dx: 0, dz: 0,
                     vx: ox * speed * FALL_DRIFT, vz: oz * speed * FALL_DRIFT,
-                    y: e.y + yShift, vy: 0, g: under ? -1 : 1, r: p.R, ink: sp.ink, under, age: 0 });
+                    y: e.y + yShift, vy: 0, g: under ? -1 : 1, r: p.R, ink: sp.ink, under, age: 0,
+                    key: 'f' + (st.fallSeq = (st.fallSeq || 0) + 1) });   // 残像用の名前
 }
 
 // 落ちていくボールを1フレームぶん動かす（裏の世界は上へ落ちる）。
