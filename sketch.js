@@ -8,6 +8,15 @@ const STOP_RAMP = 0.06;       // 停止前後の減速・加速にかける時�
 const WARP_N = 400;           // 時間ワープ表の分割数
 const SHADOW_EXTRA = 8;       // 影の計算で画面の外に余分に描く踊り場の数（偶数）
 const STEP_SHADOW_EXTRA = 3;  // STEP_SQUASH の段の影で、画面の外に余分に描く踊り場の数
+// 落ちる（FALL_PROB）：踊り場で曲がりきれず、まっすぐ転がって外側の端から落ちる。
+// 折り返しの進み t（0〜1）で FALL_EDGE のところで端に着く（入口から端まで W、折り返しの出だしと同じ速さ）
+const FALL_EDGE = 2 / Math.PI;
+const FALL_GRAVITY = 0.006;   // 落ちていくボールの重力（半径に対する割合／フレーム²）
+const FALL_HOLD_SEC = 0.8;    // 落ち始めてから、元の大きさのまま落ちる秒数
+const FALL_SHRINK_SEC = 1.2;  // そのあと、ゆっくり縮んで消えるまでの秒数
+const FALL_GROW_SEC = 1.0;    // 次の踊り場で現れるとき、大きさが 0 → 1 になるまでの秒数
+const FALL_TIP_SEC = 0.25;    // 端の角から外へ転がり出るのにかかる秒数
+const FALL_DRIFT = 0.3;       // 落ちるときの横の速さ（転がってきた速さに対する割合）。小さいほど真下に落ちる
 // 逆さの世界：ボールは表・裏とも常に描く。画面は、ELEV がこの角度（度）より上なら表の世界の
 // ボールに、下なら裏の世界のボールについていき、その間はなめらかに移る
 const BOTH_WORLDS_DEG = 10;
@@ -21,7 +30,7 @@ const controls = {};          // ラベル → パネルの部品（record.js �
 // 1フレームの経過時間（ミリ秒）。動画の書き出し中（record.js）は 60fps 固定
 function dtMs() { return window.REC_FRAME_MS ?? deltaTime; }
 
-let sBounce, sParticles, sParticleSize;
+let sBounce, sParticles, sParticleSize, sFallProb;
 let topBallsCheck, underBallsCheck;
 let footCheck, sTrailLife, sTrailSize;   // 足跡（FOOTPRINTS）   // 表の世界・裏の世界のボールを描くか
 let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
@@ -99,6 +108,7 @@ function setup() {
   sLB    = makeSlider(panel, 'L_B',       0.05, 0.8, 0.7, 0.01);
   sStopP = makeSlider(panel, 'STOP_PROB',   0,    1, 0.3, 0.01);
   sStopLen = makeSlider(panel, 'STOP_LEN',  0,  0.4, 0.2, 0.01);
+  sFallProb = makeSlider(panel, 'FALL_PROB', 0, 1, 0, 0.01);   // 踊り場で曲がりきれずに落ちる確率（0＝落ちない）
   topBallsCheck   = makeCheck(panel, 'TOP_BALLS', true);     // 表の世界（上面を下る）のボール
   underBallsCheck = makeCheck(panel, 'UNDER_BALLS', true);   // 裏の世界（底面を上る）のボール
   sBounce  = makeSlider(panel, 'BOUNCE',    0,    2,   0, 0.1);   // 段を跳ねる高さ（段の高さの何倍か。0＝転がる）
@@ -554,6 +564,7 @@ function draw() {
     footprints: footCheck.checked(), trailLife: sTrailLife.value(), trailSize: sTrailSize.value(),
     stepSquash: stepSquashCheck.checked(), stepFade: sStepFade.value(),
     particles: sParticles.value(), particleSize: sParticleSize.value(),
+    fallProb: sFallProb.value(),
     // ボールの影が届く高さの範囲（ボール中心から上下に）。
     // 下は「自分の床から1.5段ぶん」まで：階段を下る先には落ちるが、
     // 2段下にある真下の踊り場（床の向こう側）には届かない。上も同じ幅にする
@@ -597,6 +608,8 @@ function draw() {
     const dir = flowDir(c, flowSel.value());
     const du = paused ? 0 : dir * sSpeed.value() / p.step;
     st.uTotal += du;
+    st.du = du;
+    if (du !== 0) st.dir = du > 0 ? 1 : -1;   // 進む向き（止まっている間は前の向き）。落ちる向きを決める
     // 画面の追いかけ方：表だけ見えるときは表のボールに（du と同じ向き）、裏だけ見えるときは
     // 裏のボールに（逆向き）ついていく。その間はなめらかに移り、真横では階段が止まる。
     // 位置ではなく毎フレームの進みとして足し込むので、ELEV を変えても画面は飛ばない
@@ -703,7 +716,7 @@ function updateProjRows() {
 // 列ごとの状態（階段の進み具合）。列数を変えても、同じ位置の列は続きから動く
 const columnStates = new Map();
 function columnState(c) {
-  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [], marks: [], lastMark: new Map() });
+  if (!columnStates.has(c)) columnStates.set(c, { u: 0, uTotal: 0, prevQ: new Map(), particles: [], marks: [], lastMark: new Map(), fall: new Map(), fallers: [], frame: 0 });
   return columnStates.get(c);
 }
 
@@ -746,6 +759,7 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
     const d = (F - st.F) * p.step;
     for (const pt of st.particles) { pt.y -= d; pt.floor -= d; }
     for (const mk of st.marks) mk.y -= d;
+    for (const b of st.fallers) b.y -= d;
   }
   st.F = F;
   const yShift = -F * p.step;                     // 折り返しなしの座標 → ローカル座標
@@ -776,24 +790,39 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
       const jMax = floor((w.center + lim) / PAIR_INTERVAL);
       for (let j = jMin - ext; j <= jMax + ext; j++) {
         const off = j * PAIR_INTERVAL;
-        const id = w.under ? 2 : 0;   // 止まる抽選は世界ごとに変える
-        const qA = stopWarp(U + off, U + off, j, id, prob, warpA, c);
-        const qB = stopWarp(U + off - B_OFFSET, U + off - B_OFFSET, j, id + 1, prob, warpB, c);
-        if (stepMode) pathBalls.push({ q: qA, L: LA, under: w.under }, { q: qB, L: LB, under: w.under });
+        const id = w.under ? 2 : 0;   // 止まる・落ちる抽選は世界ごとに変える
+        // 落ちるのは、そのボールがいま折り返す踊り場（here）か、上りで次に着く踊り場（next）。
+        // 落ちる踊り場では止まらない（落ちるを優先）
+        const qa0 = U + off, qb0 = U + off - B_OFFSET;
+        const fa = { here: fallsAt(j, id, floor(qa0), c, base.fallProb), next: fallsAt(j, id, floor(qa0) + 1, c, base.fallProb) };
+        const fb = { here: fallsAt(j, id + 1, floor(qb0), c, base.fallProb), next: fallsAt(j, id + 1, floor(qb0) + 1, c, base.fallProb) };
+        const qA = fa.here ? qa0 : stopWarp(qa0, qa0, j, id, prob, warpA, c);
+        const qB = fb.here ? qb0 : stopWarp(qb0, qb0, j, id + 1, prob, warpB, c);
+        const dir = st.dir ?? 1;
+        // 落ちて隠れているボールには、段（STEP_SQUASH）も反応しない
+        if (stepMode) {
+          if (!fallHidden(qA, LA, fa, dir)) pathBalls.push({ q: qA, L: LA, under: w.under });
+          if (!fallHidden(qB, LB, fb, dir)) pathBalls.push({ q: qB, L: LB, under: w.under });
+        }
         if (j < jMin - 1 || j > jMax + 1 || p.R <= 0) continue;
-        const pos = w.under ? ballPosUnder : ballPos;
-        const bA = { ...pos(qA, p, LA, base.bounce), r: p.R, ink: !w.under, under: w.under };
-        const bB = { ...pos(qB, p, LB, base.bounce), r: p.R, ink: w.under, under: w.under };
-        bA.y += yShift; bB.y += yShift;
-        balls.push(bA, bB);
-        // 着地したら粒を出す（前のフレームからの進みを見る）
-        if (base.particles > 0 || base.footprints) {
-          const tag = w.under ? 'u' : 't';
-          const hitA = detectContact(st, tag + j + 'A', qA, LA, p, bA, base);
-          const hitB = detectContact(st, tag + j + 'B', qB, LB, p, bB, base);
-          if (base.footprints) {
-            leaveFootprint(st, tag + j + 'A', qA, LA, p, bA, base, hitA, yShift);
-            leaveFootprint(st, tag + j + 'B', qB, LB, p, bB, base, hitB, yShift);
+        const tag = w.under ? 'u' : 't';
+        const specs = [
+          { key: tag + j + 'A', q: qA, L: LA, fall: fa, ink: !w.under },
+          { key: tag + j + 'B', q: qB, L: LB, fall: fb, ink: w.under },
+        ];
+        for (const sp of specs) {
+          const b = fallBall(st, sp, p, base, w.under, yShift);
+          if (!b) {
+            // 隠れている間は、着地も足跡も扱わない（現れたあとに、跡が前の跡とつながらないように）
+            st.prevQ.delete(sp.key);
+            st.lastMark.delete(sp.key);
+            continue;
+          }
+          balls.push(b);
+          // 着地したら粒を出す（前のフレームからの進みを見る）
+          if (base.particles > 0 || base.footprints) {
+            const hit = detectContact(st, sp.key, sp.q, sp.L, p, b, base);
+            if (base.footprints) leaveFootprint(st, sp.key, sp.q, sp.L, p, b, base, hit, yShift);
           }
         }
       }
@@ -801,9 +830,15 @@ function drawColumn(p, st, c, base, shading, limitY, setView, a, e) {
   }
   // 粒を動かし、ボールと一緒に描く（同じシェーディング・同じ色・影も落とす）
   updateParticles(st, p);
+  updateFallers(st, p);
   footStep = p.step;   // まとめるときに、基準 F のずれを高さに直すのに使う
   updateFootprints(st, base);
   for (const pt of st.particles) balls.push({ x: pt.x, y: pt.y, z: pt.z, r: pt.r * (1 - pt.age / pt.life), ink: pt.ink });
+  // 落ちていくボール：しばらくは元の大きさのまま落ち、そのあとゆっくり縮んで消える
+  for (const b of st.fallers) {
+    const u = constrain((b.age - FALL_HOLD_SEC) / FALL_SHRINK_SEC, 0, 1);
+    balls.push({ x: b.x, y: b.y, z: b.z, r: b.r * (1 - u * u * (3 - 2 * u)), ink: b.ink, under: b.under });
+  }
 
   const ctx = { ...base, balls, centerY: s * p.step };
 
@@ -1158,6 +1193,96 @@ function updateParticleRow() {
 // 停止の抽選：このサイクルで止まるなら、サイクル内の進みをワープさせる
 // q：折り返しありの位置、qAbs：折り返しなしの位置（抽選用）、id：0=A,1=B
 // col：列番号（列ごとに抽選結果を変えて、止まるタイミングがそろわないようにする）
+// ---------------------------------------------------------------------
+// 落ちる（FALL_PROB）
+// ---------------------------------------------------------------------
+// ボール（ツガイ j・抽選の番号 id）が、折り返しなしの進み n のサイクルの踊り場で落ちるか。
+// 止まる抽選（stopWarp）とは別の乱数にする
+function fallsAt(j, id, n, col, prob) {
+  return prob > 0 && hash3(j * 7.31 + col * 1013 + 101, id + 17, n) < prob;
+}
+
+// 落ちたボールが隠れているか。進む向き dir で決まる：
+//   下り（dir > 0）：落ちる踊り場の端を越えてから、次の踊り場に着くまで
+//   上り（dir < 0）：落ちる踊り場の端を越えてから、上の踊り場に着くまで（その間の階段も）
+function fallHidden(q, L, fall, dir) {
+  const f = q - floor(q);
+  if (dir >= 0) return fall.here && f >= L * FALL_EDGE;
+  return (fall.here && f < L * (1 - FALL_EDGE)) || (fall.next && f >= L);
+}
+
+// 曲がりきれずに、踊り場の入口からまっすぐ外側へ転がる位置。
+// u：入口からの進み（u = FALL_EDGE で外側の端）、fromStart：折り返しの始め（t = 0）側から入ったか
+function fallStraight(u, fromStart, n, p, under) {
+  const k = under ? -n : n;          // 踊り場の番号
+  const s = sideOf(k);
+  const x = s * (p.gap / 2 + (p.W / 2) * PI * u);
+  // 入ってきた側の z（表：t = 0 で +zc、t = 1 で -zc。裏はその逆）
+  const z = (fromStart ? 1 : -1) * (under ? -1 : 1) * s * p.zc;
+  return { x, y: under ? contactYUnder(x, z, k, p) : contactY(x, z, k, p), z };
+}
+
+// ボール1つの位置と大きさ。隠れているなら null。
+// 端を越えた瞬間に「落ちていくボール」を切り離し、次の踊り場に着いたら大きさ 0 → 1 で現れる
+function fallBall(st, sp, p, base, under, yShift) {
+  const { q, L, fall } = sp;
+  const dir = st.dir ?? 1;
+  const n = floor(q), f = q - n, t = f / L;
+  const hidden = fallHidden(q, L, fall, dir);
+  let rec = st.fall.get(sp.key);
+  if (!rec) { rec = { hidden, age: -1 }; st.fall.set(sp.key, rec); }
+  rec.frame = st.frame;
+  if (hidden && !rec.hidden && fall.here && f < L) spawnFaller(st, sp, p, under, yShift, dir);
+  const appear = !hidden && rec.hidden;
+  if (appear) rec.age = 0;
+  rec.hidden = hidden;
+  if (hidden) return null;
+
+  const straight = fall.here && f < L && (dir >= 0 ? t < FALL_EDGE : t > 1 - FALL_EDGE);
+  const pos = straight ? fallStraight(dir >= 0 ? t : 1 - t, dir >= 0, n, p, under)
+                       : (under ? ballPosUnder : ballPos)(q, p, L, base.bounce);
+  const b = { ...pos, y: pos.y + yShift, r: p.R, ink: sp.ink, under };
+  if (rec.age >= 0) {
+    const u = rec.age / FALL_GROW_SEC;
+    if (u >= 1) rec.age = -1;
+    else {
+      b.r = p.R * u * u * (3 - 2 * u);   // ゆっくり膨らみ始めて、ゆっくり元の大きさに落ち着く
+      if (!paused) rec.age += dtMs() / 1000;
+    }
+  }
+  if (appear && base.particles > 0) spawnParticles(st, b, p, base);
+  return b;
+}
+
+// 端から落ちていくボールを切り離す。横の速さは、転がってきた速さの FALL_DRIFT 倍で外側へ
+function spawnFaller(st, sp, p, under, yShift, dir) {
+  const n = floor(sp.q);
+  const e = fallStraight(FALL_EDGE, dir >= 0, n, p, under);
+  const s = sideOf(under ? -n : n);
+  const vx = s * (p.W / 2) * PI / sp.L * abs(st.du ?? 0) * FALL_DRIFT;
+  // 端の角から転がり落ちる：落ち始めの FALL_TIP_SEC の間に、ボールが踊り場にめり込まない所（端から半径ぶん外）まで出る
+  st.fallers.push({ x: e.x, xe: e.x, out: s * p.R, drift: 0, y: e.y + yShift, z: e.z, vx, vy: 0, g: under ? -1 : 1,
+                    r: p.R, ink: sp.ink, under, age: 0 });
+}
+
+// 落ちていくボールを1フレームぶん動かす（裏の世界は上へ落ちる）。
+// あわせて、しばらく画面に出てこないボールの記録を捨てる
+function updateFallers(st, p) {
+  st.frame++;
+  if (st.frame % 600 === 0) for (const [k, r] of st.fall) if (st.frame - r.frame > 300) st.fall.delete(k);
+  if (paused) return;
+  const dt = min(dtMs() / (1000 / 60), 3);
+  for (const b of st.fallers) {
+    b.vy += b.g * p.R * FALL_GRAVITY * dt;
+    b.drift += b.vx * dt;
+    const k = min(1, b.age / FALL_TIP_SEC);
+    b.x = b.xe + b.out * (1 - (1 - k) * (1 - k)) + b.drift;
+    b.y += b.vy * dt;
+    b.age += dt / 60;
+  }
+  st.fallers = st.fallers.filter(b => b.age < FALL_HOLD_SEC + FALL_SHRINK_SEC);
+}
+
 function stopWarp(q, qAbs, j, id, prob, warp, col = 0) {
   if (!warp) return q;
   const n = floor(q);
