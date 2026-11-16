@@ -287,6 +287,58 @@ vec4 grain(float tone) {
 }
 `;
 
+// 油絵風（OIL）の面の塗りで使う部品。TRI と同じ3色の塗り分けに、筆の筋を重ねる
+//   uPaintPx  ：筆の大きさ（デバイスの画素。パネルの PAINT_SIZE）
+//   uPaintSeed：タッチの描き直しの番号（PAINT_REDRAW で切り替わる）
+//   uOilStreak：1 なら面とボールに筆の筋を描く（OIL_TYPE = STREAK）
+const OIL_LIB = `
+uniform vec3 uColC;
+uniform float uOilStreak;
+uniform float uPaintPx;
+uniform float uPaintSeed;
+
+float oilHash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float oilNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(oilHash(i), oilHash(i + vec2(1.0, 0.0)), f.x),
+             mix(oilHash(i + vec2(0.0, 1.0)), oilHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+// TRI と同じ塗り分け：上面＝COLOR_C、±x の側面＝COLOR_B、それ以外＝COLOR_A
+vec3 triStairColor() {
+  if (isTop()) return uColC;
+  if (isBottom()) return uPaper;
+  return abs(vNormal.x) > abs(vNormal.z) ? uInk : uPaper;
+}
+// 面に貼りつけた2D座標（デバイスの画素）。x が面の横方向（筆を動かす向き）
+vec2 oilFaceCoord() {
+  vec3 n = abs(vNormal);
+  vec2 p = (n.y >= n.x && n.y >= n.z) ? vPos.xz : (n.x >= n.z ? vPos.zy : vPos.xy);
+  return p * uZoom;
+}
+// 色 col に筆の筋を重ねる。p：模様の座標（画素）/ face：面に貼る（ボールは画面に貼る）
+vec3 oilStreak(vec3 col, vec2 p, bool face) {
+  float S = uPaintPx;
+  float sd = uPaintSeed * 17.31;
+  float a = face ? 0.12 : 0.6;   // 筆の向きを少し傾ける
+  vec2 q = vec2(p.x * cos(a) + p.y * sin(a), -p.x * sin(a) + p.y * cos(a));
+  // 1本1本の筆跡（帯）。帯の境目は波打つ
+  float band = floor(q.y / (S * 1.1) + oilNoise(vec2(q.x / (S * 6.0), sd)) * 0.8);
+  float bh = oilHash(vec2(band, sd + 3.0));
+  // 毛先の細い筋
+  float bristle = oilNoise(vec2(q.x / (S * 5.0) + bh * 20.0 + sd, q.y / (S * 0.12)));
+  vec3 c = col * (0.9 + 0.22 * bristle + (bh - 0.5) * 0.14);
+  c = mix(c, vec3(1.0), smoothstep(0.78, 0.95, bristle) * 0.25);      // 絵の具の照り
+  // かすれ：絵の具が乗らず、下の色（紙）がのぞく
+  float dry = oilNoise(vec2(q.x / (S * 4.0) + bh * 7.0, q.y / (S * 0.1) + sd));
+  return mix(c, mix(c, uPaper, 0.5), smoothstep(0.86, 0.95, dry) * 0.6);
+}
+`;
+
 const SHADINGS = {
   // 白い箱＋輪郭線（シェーディング・影なし）
   NONE: {
@@ -452,6 +504,43 @@ const SHADINGS = {
     shadow: false,
     palette: 3,
     params: { uToon: 0.35 },
+  },
+
+  // ---- 油絵風（粗くて癖のある塗り）。TRI の3色の塗り分けを下塗りにして、
+  //      描き終えた画面に「絵の具」のポスト処理（paint）をかける。種類はパネルの OIL_TYPE で選ぶ：
+  //   KNIFE ：ペインティングナイフ。大きな四角い塗りで、塗り始めの側の色を進む向きへ引きずる。
+  //           塗りの縁には盛り上がった絵の具の稜線（光の当たる側が明るく、反対側が暗い）が残る
+  //   STREAK：引っかき。面の中に方向のそろった筆の筋（面に貼りつく）＋背景に斜めの雨のような筆跡
+  //   DAB   ：短いタッチ。画面を短い楕円の筆跡で埋め尽くし、筆跡ごとにその中心の色1色で塗る
+  //           （形の境目をまたいで色がはみ出す）。向きは境目に沿い、離れると渦を巻くように流れる
+  //   paint[種類] のフィルタの前に、共通の下ごしらえ（PAINT_PREP：輪郭のゆらぎと、太くて暗い縁取り）をかける。
+  //   パネルの PAINT_* で大きさなどを変える。タッチは PAINT_REDRAW（1秒あたりの回数）で描き直される
+  OIL: {
+    base: 'TRI',
+    stair: OIL_LIB + `
+      void main() {
+        vec3 col = triStairColor();
+        if (uOilStreak > 0.5) col = oilStreak(col, oilFaceCoord(), true);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+    ball: OIL_LIB + `
+      uniform float uToon;
+      uniform vec3 uBallInkLit;  uniform vec3 uBallInkDark;
+      uniform vec3 uBallPaperLit; uniform vec3 uBallPaperDark;
+      void main() {
+        bool lit = lambert() > uToon;
+        vec3 col = uIsInk > 0.5 ? (lit ? uBallInkLit : uBallInkDark) : (lit ? uBallPaperLit : uBallPaperDark);
+        if (uOilStreak > 0.5) col = oilStreak(col, gl_FragCoord.xy, false);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+    oilTypes: ['KNIFE', 'STREAK', 'DAB'],   // パネルの OIL_TYPE の選択肢（先頭が初期値）
+    paint: {
+      KNIFE:  { frag: 'KNIFE',  params: { uAngle: 0.35 } },
+      STREAK: { frag: 'STREAK', params: { uAngle: 1.15 } },
+      DAB:    { frag: 'DAB',    params: { uAngle: -0.5 } },
+    },
   },
 };
 // 紙（uPaper）とインク（uInk）は、パネルの COLOR_A / COLOR_B（INVERT で入れ替え）が
@@ -935,4 +1024,218 @@ function endPixelate(size, thr, palette) {
   pixUpShader.setUniform('uLowSize', [lw, lh]);
   pixUpShader.setUniform('uCell', cell);
   filter(pixUpShader);
+}
+
+// ---------------------------------------------------------------------
+// ポストプロセス：油絵風（OIL）の「絵の具」。シェーディングの paint から OIL_TYPE で選んだフィルタを、
+// 描き終えた画面にかける（パネルの PAINT_SIZE / PAINT_OUTLINE / PAINT_WOBBLE / PAINT_REDRAW）
+//   1. PAINT_PREP（共通）：画面をノイズでゆがめて輪郭をゆらし、色の境目に太くて暗い縁取りを描く
+//      （縁取りの色は、境目の暗い側の色をさらに暗くしたもの。青の縁は紺、赤の縁はこげ茶になる）
+//   2. 種類ごとのフィルタ（STREAK / DAB / KNIFE）
+// 座標はすべてデバイスの画素で、y は下向き（filter() の vTexCoord は y = 0 が画面の上）
+// ---------------------------------------------------------------------
+const PAINT_HEAD = `
+precision highp float;
+varying vec2 vTexCoord;
+uniform sampler2D tex0;
+uniform vec2 uRes;        // 画面の大きさ（デバイスの画素）
+uniform float uSeed;      // 描き直しの番号（PAINT_REDRAW）
+uniform float uBrush;     // 筆の大きさ（デバイスの画素。PAINT_SIZE）
+uniform float uWobble;    // 輪郭のゆれ（デバイスの画素。PAINT_WOBBLE）
+uniform float uOutline;   // 縁取りの太さ（デバイスの画素。PAINT_OUTLINE）
+uniform float uAngle;     // 筆の向き（ラジアン。画面の右が0、時計回り）
+uniform vec3 uBg;         // 背景色
+
+float h12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 h22(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h12(i), h12(i + vec2(1.0, 0.0)), f.x),
+             mix(h12(i + vec2(0.0, 1.0)), h12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+vec3 scene(vec2 px) { return texture2D(tex0, clamp(px / uRes, 0.0, 1.0)).rgb; }
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+`;
+
+const PAINT_FRAGS = {
+  // 共通の下ごしらえ：輪郭のゆらぎと縁取り
+  PREP: `
+    void main() {
+      vec2 px = vTexCoord * uRes;
+      float sd = uSeed * 7.31;
+      // 低い周波数のノイズで、画面をまるごとゆがめる（直線がよれた手描きの線になる）
+      vec2 q = px / (uBrush * 4.0) + sd;
+      vec2 sp = px + (vec2(vnoise(q), vnoise(q + 19.7)) - 0.5) * 2.0 * uWobble;
+      vec3 c = scene(sp);
+      if (uOutline > 0.0) {
+        // 周りの8点と色を比べて、境目に近ければ縁取りの色にする。太さも場所ごとにむらを出す
+        float r = uOutline * 0.5 * (0.5 + vnoise(px / (uBrush * 1.5) + sd * 1.3));
+        float e = 0.0;
+        vec3 dark = c;
+        for (int i = 0; i < 8; i++) {
+          float a = float(i) * 0.7853982;
+          vec3 n = scene(sp + vec2(cos(a), sin(a)) * r);
+          e = max(e, length(n - c));
+          if (lum(n) < lum(dark)) dark = n;
+        }
+        // かすれ：線の中にも、ところどころ絵の具が乗らない所を作る
+        float skip = vnoise(vec2(px.x + px.y, px.x - px.y) / (uBrush * 0.6) + sd);
+        float edge = smoothstep(0.35, 0.55, e) * (1.0 - 0.6 * smoothstep(0.7, 0.9, skip));
+        c = mix(c, dark * 0.32, edge);
+      }
+      gl_FragColor = vec4(c, 1.0);
+    }
+  `,
+
+  // 1. 引っかき：斜めの細い筆跡を、雨のようにまとまって散らす（背景ほど強く）
+  STREAK: `
+    void main() {
+      vec2 px = vTexCoord * uRes;
+      vec3 c = texture2D(tex0, vTexCoord).rgb;
+      vec2 q = rot(-uAngle) * px;   // x：筆の向き、y：それと直角
+      float sd = uSeed * 3.17;
+      float laneW = max(uBrush * 0.18, 1.5);   // 筋1本の太さ
+      float len = uBrush * 3.5;                // 筋1本の長さ
+      float lane = floor(q.y / laneW);
+      float u = q.x / len + h12(vec2(lane, sd)) * 50.0;
+      float seg = floor(u), t = fract(u);
+      float on = step(0.7, h12(vec2(lane, seg) + sd));
+      float dash = on * smoothstep(0.0, 0.2, t) * smoothstep(1.0, 0.5, t);
+      // 筋はまとまって現れる（何もない所と、雨のように集まる所を作る）
+      float clump = vnoise(rot(-uAngle) * px / vec2(uBrush * 10.0, uBrush * 4.0) + sd);
+      dash *= smoothstep(0.4, 0.75, clump);
+      float onBg = 1.0 - smoothstep(0.04, 0.15, length(c - uBg));
+      c = mix(c, mix(c, vec3(1.0), 0.4), dash * mix(0.3, 0.8, onBg));
+      // ところどころに暗い筋も入れて、塗り重ねた感じを出す
+      float darkLane = step(0.93, h12(vec2(lane, seg + 77.0) + sd)) * smoothstep(0.5, 0.8, clump);
+      c = mix(c, c * 0.8, darkLane * 0.5 * smoothstep(0.0, 0.3, t) * smoothstep(1.0, 0.6, t));
+      gl_FragColor = vec4(c, 1.0);
+    }
+  `,
+
+  // 2. 短いタッチ：格子の各マスに1つずつ、向きと長さの違う楕円の筆跡を置く。
+  //    重なった所は乱数で上下を決め、一番上の筆跡の色（その中心の色）で塗る
+  DAB: `
+    void main() {
+      vec2 px = vTexCoord * uRes;
+      float S = uBrush;
+      float sd = uSeed * 31.7;
+      vec2 cell = floor(px / S);
+      float best = -1.0;
+      vec3 col = texture2D(tex0, vTexCoord).rgb * 0.92;   // 筆跡の間からのぞく下塗り
+      for (int j = -2; j <= 2; j++) {
+        for (int i = -2; i <= 2; i++) {
+          vec2 cc = cell + vec2(float(i), float(j));
+          vec2 r = h22(cc + sd);
+          vec2 ctr = (cc + r) * S;
+          // 筆の向き：色の境目の近くでは境目に沿わせる（形が崩れすぎないように）。
+          // 境目の向きは、色の変化（RGB の3色ぶん）をまとめた構造テンソルから求める。
+          // 境目から離れた所は、ゆるやかに流れる場（渦を巻くような向きのむら）
+          vec2 o = vec2(S * 0.6, 0.0);
+          vec3 gx = scene(ctr + o.xy) - scene(ctr - o.xy);
+          vec3 gy = scene(ctr + o.yx) - scene(ctr - o.yx);
+          float jxx = dot(gx, gx), jyy = dot(gy, gy), jxy = dot(gx, gy);
+          float ang = jxx + jyy > 0.08
+            ? 0.5 * atan(2.0 * jxy, jxx - jyy) + 1.5707963 + (r.y - 0.5) * 0.3
+            : uAngle + (vnoise(ctr / (S * 7.0) + 5.0 + sd * 0.1) - 0.5) * 2.2;
+          vec2 l = rot(-ang) * (px - ctr);
+          float L = S * (0.7 + 0.7 * r.x);
+          float t = l.x / L;
+          if (abs(t) >= 1.0) continue;
+          // 幅：先が細く、ふちがぎざぎざ
+          float W = S * (0.32 + 0.22 * r.y) * (1.0 - t * t * 0.7)
+                  * (0.8 + 0.4 * vnoise(vec2(l.x / (S * 0.25), r.x * 50.0)));
+          if (abs(l.y) >= W) continue;
+          float pr = h12(cc * 1.37 + sd + 3.1);
+          if (pr <= best) continue;
+          best = pr;
+          vec3 base = scene(ctr);
+          // 毛先の筋（筆跡の向きに沿う）と、筆跡ごとの明るさのむら
+          float br = vnoise(vec2(l.y / (S * 0.07), l.x / (S * 1.5) + pr * 40.0));
+          col = base * (0.86 + 0.26 * br) + (pr - 0.5) * 0.1;
+        }
+      }
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+
+  // 3. ペインティングナイフ：大きな長方形の塗り。塗り始めの側の色を進む向きへ引き伸ばして
+  //    絵の具を引きずり、塗りの両わきと終わりに盛り上がった稜線を描く（光は左上から）
+  KNIFE: `
+    void main() {
+      vec2 px = vTexCoord * uRes;
+      float K = uBrush * 3.2;
+      float sd = uSeed * 13.7;
+      vec2 cell = floor(px / K);
+      float best = -1.0;
+      vec2 bCtr = px, bL = vec2(0.0), bSize = vec2(1.0);
+      float bAng = 0.0, bPr = 0.0;
+      for (int j = -2; j <= 2; j++) {
+        for (int i = -2; i <= 2; i++) {
+          vec2 cc = cell + vec2(float(i), float(j));
+          vec2 r = h22(cc + sd);
+          vec2 ctr = (cc + r) * K;
+          float ang = uAngle + (h12(cc + sd + 9.0) - 0.5) * 1.4;
+          vec2 l = rot(-ang) * (px - ctr);
+          // 少し斜めに切った長方形（ナイフの刃の当たり方）
+          l.x += l.y * 0.35;
+          vec2 sz = vec2(K * (0.7 + 0.6 * r.x), K * (0.35 + 0.25 * r.y));
+          if (abs(l.x) >= sz.x || abs(l.y) >= sz.y) continue;
+          float pr = h12(cc * 1.71 + sd + 5.3);
+          if (pr <= best) continue;
+          best = pr; bCtr = ctr; bL = l; bSize = sz; bAng = ang; bPr = pr;
+        }
+      }
+      vec3 col = texture2D(tex0, vTexCoord).rgb;
+      if (best >= 0.0) {
+        vec2 dir = rot(bAng) * vec2(1.0, 0.0), nrm = rot(bAng) * vec2(0.0, 1.0);
+        float t = (bL.x + bSize.x) / (2.0 * bSize.x);   // 0：塗り始め、1：塗り終わり
+        // 引きずり：塗り始めの側の色を、ナイフの進む向きへ引き伸ばす（ぼかさず、くっきりずらす）
+        col = scene(px - dir * 2.0 * bSize.x * t * 0.3);
+        // 盛り上がり：両わきと終わりのふち。光の向き（左上）を向いた側が明るく、反対側が暗い
+        vec2 light = normalize(vec2(-1.0, -1.0));
+        float across = bL.y / bSize.y;
+        float rim = smoothstep(0.75, 1.0, abs(across));
+        float facing = dot(nrm * sign(across), light);
+        float endRim = smoothstep(0.85, 1.0, t);
+        float scratch = vnoise(vec2(bL.y / (uBrush * 0.12), bL.x / (uBrush * 4.0) + bPr * 30.0));
+        float shade = 1.0 + 0.22 * rim * facing + 0.18 * endRim * dot(dir, light)
+                    + 0.14 * (scratch - 0.5);
+        col *= shade;
+        col = mix(col, vec3(1.0), smoothstep(0.85, 0.97, scratch) * 0.18);   // 絵の具の照り
+      }
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+};
+const paintShaders = {};
+
+// s：resolveShading の結果 / o：{ type（OIL_TYPE）, brush, outline, wobble（画面ピクセル）, seed, bg }
+function applyPaint(s, o) {
+  if (!s.paint) return;
+  const p = s.paint[o.type] || s.paint[s.oilTypes[0]];
+  const d = pixelDensity();
+  const get = (k) => paintShaders[k] || (paintShaders[k] = createFilterShader(PAINT_HEAD + PAINT_FRAGS[k]));
+  const params = { uAngle: 0, ...p.params };
+  for (const k of ['PREP', p.frag]) {
+    const sh = get(k);
+    sh.setUniform('uRes', [width * d, height * d]);
+    sh.setUniform('uSeed', o.seed);
+    sh.setUniform('uBrush', o.brush * d);
+    sh.setUniform('uWobble', o.wobble * d);
+    sh.setUniform('uOutline', o.outline * d);
+    sh.setUniform('uBg', o.bg);
+    for (const [name, v] of Object.entries(params)) sh.setUniform(name, v);
+    filter(sh);
+  }
 }
