@@ -38,7 +38,7 @@ let stepSquashCheck, sStepFade;   // 段の動き（STEP_SQUASH）
 let sLandSize, sStairWidth;   // SQUARE だけの大きさ：角の踊り場の一辺と、階段の幅（踊り場に対する割合）
 let shapeSel;   // 階段の形：SWITCHBACK（折り返し階段）/ OVAL（オーバルのらせん）/ SQUARE（角ばったらせん）
 let projSel, sFov;   // 投影：ORTHO（正投影）/ PERSPECTIVE（透視投影）
-let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
+let sW, sD, sSteps, sH, sVGap, sGap, sElev, sAzim, sZoom, sRoll, sSpeed, sCamFollow, sCamSpeed, sOrbit, sLA, sLB, sBallR, sStopP, sStopLen;
 let orbit = 0;
 let paused = false;
 let pauseBtn;
@@ -147,6 +147,10 @@ function setup() {
   shapeSel.changed(updateShapeRows);
   updateShapeRows();
   sOrbit = makeSlider(panel, 'ORBIT_SPEED', 0,    1, 0.2, 0.01);
+  // 画面の上下の動き：ボールについていく割合と、カメラ自身の速さ（プラスで下、SPEED と同じ向き）。
+  // 既定（1 / 0）ならボールについていくだけ。0 / 0.8 にすると、ボールと関係なくカメラが下っていく
+  sCamFollow = makeSlider(panel, 'CAM_FOLLOW', 0,   1,   1, 0.01);
+  sCamSpeed  = makeSlider(panel, 'CAM_SPEED', -2,   2,   0, 0.1);
 
   makeSection(panel, 'LAYOUT');       // 階段を画面の横一列に何本並べるか
   sColumns    = makeSlider(panel, 'COLUMNS',      1,    9,   1, 2);   // 列の数（中央を挟んで左右対称になるよう奇数）
@@ -678,7 +682,9 @@ function draw() {
     // 画面の追いかけ方：表だけ見えるときは表のボールに（du と同じ向き）、裏だけ見えるときは
     // 裏のボールに（逆向き）ついていく。その間はなめらかに移り、真横では階段が止まる。
     // 位置ではなく毎フレームの進みとして足し込むので、ELEV を変えても画面は飛ばない
-    st.S = (st.S ?? st.uTotal) + du * (1 - 2 * underWeight(eDeg));
+    // CAM_FOLLOW：ボールについていく割合。CAM_SPEED：それとは別に、カメラ自身が進む速さ（FLOW の向きも掛ける）
+    const camDu = paused ? 0 : dir * sCamSpeed.value() / p.step;
+    st.S = (st.S ?? st.uTotal) + du * (1 - 2 * underWeight(eDeg)) * sCamFollow.value() + camDu;
 
     // この列のカメラ：周回の向きを ORBIT_FLOW で列ごとに変える
     const a = radians(sAzim.value() + orbit * flowDir(c, orbitFlowSel.value()));

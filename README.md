@@ -89,6 +89,8 @@ SQUARE では `W` `D` の代わりに `LANDING_SIZE`（角の踊り場の一辺�
 | `ZOOM` | 1 | 拡大率 |
 | `FOV` | 40 | PERSPECTIVE の画角（広いほど遠近感が強い） |
 | `ORBIT_SPEED` | 0.2 | カメラが周回する速さ |
+| `CAM_FOLLOW` | 1 | 画面がボールについていく割合（0 でボールと関係なく動く） |
+| `CAM_SPEED` | 0 | ボールとは別に、カメラ自身が上下に進む速さ（プラスで下、マイナスで上。FLOW の向きも掛かる）。例：`SPEED -0.8 / CAM_FOLLOW 0 / CAM_SPEED 0.8` でボールは上り、カメラは下る |
 
 #### LAYOUT：列
 
